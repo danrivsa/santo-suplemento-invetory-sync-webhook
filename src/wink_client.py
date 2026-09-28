@@ -5,7 +5,7 @@ import logging
 import httpx
 
 from src.config import Settings
-from src.models import WinkAdjustItem, WinkAdjustStockRequest
+from src.models import WinkAdjustItem, WinkAdjustStockRequest, WinkSyncPriceRequest
 
 logger = logging.getLogger(__name__)
 
@@ -47,3 +47,42 @@ def adjust_stock(sku: str, stock_variation: float, config: Settings) -> dict:
     result = response.json()
     logger.info("Wink adjust-stock response: %s", result)
     return result
+
+
+def adjust_price(sku: str, price: float, config: Settings) -> dict:
+    """Call Wink update-price-by-sku endpoint.
+
+    The price is absolute, not a delta, so re-sending the same value is idempotent.
+    """
+    logger.info("Updating price for sku=%s to price=%s", sku, price)
+
+    body = WinkSyncPriceRequest(
+        sku=sku,
+        price=price,
+        inventory_ids=config.wink_inventory_id_list,
+    )
+
+    with httpx.Client(timeout=10) as client:
+        response = client.post(
+            f"{WINK_BASE_URL}/product-inventory/update-price-by-sku",
+            headers={
+                "x-api-key": config.wink_api_key,
+                "Content-Type": "application/json",
+            },
+            content=body.model_dump_json(),
+        )
+
+    response.raise_for_status()
+    result = response.json()
+    logger.info("Wink update-price response: %s", result)
+    return result
+
+def get_invenories(config: Settings)->dict:
+    with httpx.Client(timeout=10) as client:
+        result = client.get(f"{WINK_BASE_URL}/inventories",
+                                headers={
+                                    "x-api-key": config.wink_api_key,
+                                    "Content-Type": "application/json"
+                                })
+        result.raise_for_status();
+        print(result.json())

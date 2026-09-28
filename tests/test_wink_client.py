@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from src.config import Settings
-from src.wink_client import adjust_stock
+from src.wink_client import adjust_price, adjust_stock
 
 
 @pytest.fixture()
@@ -88,3 +88,43 @@ def test_http_error_raises(mocker, config):
 
     with pytest.raises(httpx.HTTPStatusError):
         adjust_stock("ABC-123", 10, config)
+
+
+def test_update_price(mocker, config):
+    instance = _mock_httpx(mocker, response_json={"summary": {"pricesUpdated": 1}, "results": []})
+
+    result = adjust_price("ABC-123", 18.5, config)
+
+    assert result["summary"]["pricesUpdated"] == 1
+    assert "update-price-by-sku" in instance.post.call_args[0][0]
+
+
+def test_update_price_sends_sku_price_and_inventory_ids(mocker, config):
+    instance = _mock_httpx(mocker)
+
+    adjust_price("ABC-123", 18.5, config)
+
+    body = json.loads(instance.post.call_args[1]["content"])
+    assert body == {"sku": "ABC-123", "price": 18.5, "inventory_ids": [12]}
+    assert instance.post.call_args[1]["headers"]["x-api-key"] == "wink_key_test"
+
+
+def test_update_price_zero_is_sent(mocker, config):
+    instance = _mock_httpx(mocker)
+
+    adjust_price("ABC-123", 0.0, config)
+
+    body = json.loads(instance.post.call_args[1]["content"])
+    assert body["price"] == 0.0
+
+
+def test_update_price_http_error_raises(mocker, config):
+    error = httpx.HTTPStatusError(
+        "422 Unprocessable Entity",
+        request=mocker.Mock(),
+        response=mocker.Mock(status_code=422),
+    )
+    _mock_httpx(mocker, raise_for_status=error)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        adjust_price("ABC-123", 18.5, config)

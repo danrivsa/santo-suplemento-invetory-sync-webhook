@@ -38,3 +38,35 @@ class WinkAdjustStockRequest(BaseModel):
 class WinkAdjustStockResponse(BaseModel):
     summary: dict
     results: list[dict]
+
+
+class WinkSyncPriceRequest(BaseModel):
+    sku: str
+    price: float
+    inventory_ids: list[int]
+
+
+class HoldedProductVariant(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    sku: str | None = None
+    price: float | None = None
+    stock: float | None = None
+    description: str | None = None
+
+
+class HoldedProductPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    name: str = ""
+    description: str | None = None
+    kind: str = "simple"
+    sku: str | None = None
+    barcode: str | None = None
+    price: float | None = None
+    cost: float | None = None
+    stock: float = 0
+    variants: list[HoldedProductVariant] = Field(default_factory=list)
+    pack_items: list[dict] = Field(default_factory=list, alias="packItems")
