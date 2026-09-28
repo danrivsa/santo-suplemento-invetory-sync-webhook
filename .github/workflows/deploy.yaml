@@ -116,12 +116,18 @@ jobs:
           TIMEOUT=30
           MEMORY=256
 
-          # Built with jq so secrets containing quotes or backslashes cannot break the JSON.
-          VARIABLES=$(jq -n \
+          # The AWS CLI shorthand parser does not accept JSON objects for
+          # --environment (it expects key=value pairs and fails on the first
+          # quote), so the request bodies are built with jq and sent through
+          # --cli-input-json instead. jq also guarantees that secrets
+          # containing quotes, backslashes or newlines cannot break the JSON.
+
+          jq -n \
             --arg secret "$HOLDED_WEBHOOK_SECRET" \
             --arg key "$WINK_API_KEY" \
             --arg inv "$WINK_INVENTORY_IDS" \
-            '{HOLDED_WEBHOOK_SECRET: $secret, WINK_API_KEY: $key, WINK_INVENTORY_IDS: $inv}')
+            '{HOLDED_WEBHOOK_SECRET: $secret, WINK_API_KEY: $key, WINK_INVENTORY_IDS: $inv}' \
+            > build/variables.json
 
           if aws lambda get-function --function-name "$FUNCTION_NAME" >/dev/null 2>&1; then
             echo "Updating existing function..."
@@ -130,26 +136,54 @@ jobs:
               --zip-file fileb://build/deployment.zip > /dev/null
             aws lambda wait function-updated-v2 --function-name "$FUNCTION_NAME"
 
+            jq -n \
+              --arg fn "$FUNCTION_NAME" \
+              --arg runtime "$RUNTIME" \
+              --arg handler "$HANDLER" \
+              --argjson timeout "$TIMEOUT" \
+              --argjson memory "$MEMORY" \
+              --slurpfile vars build/variables.json \
+              '{
+                FunctionName: $fn,
+                Runtime: $runtime,
+                Handler: $handler,
+                Timeout: $timeout,
+                MemorySize: $memory,
+                Environment: {Variables: $vars[0]}
+              }' > build/update-config.json
+
             aws lambda update-function-configuration \
-              --function-name "$FUNCTION_NAME" \
-              --runtime "$RUNTIME" \
-              --handler "$HANDLER" \
-              --timeout "$TIMEOUT" \
-              --memory-size "$MEMORY" \
-              --environment "Variables=$VARIABLES" > /dev/null
+              --cli-input-json file://build/update-config.json > /dev/null
             aws lambda wait function-updated-v2 --function-name "$FUNCTION_NAME"
           else
             echo "Creating new function..."
+            # --cli-input-json cannot be combined with other flags, so the zip
+            # is inlined as a base64 blob instead of using --zip-file.
+            base64 -w0 build/deployment.zip > build/zip.b64
+
+            jq -n \
+              --arg fn "$FUNCTION_NAME" \
+              --arg runtime "$RUNTIME" \
+              --arg handler "$HANDLER" \
+              --arg role "$LAMBDA_ROLE_ARN" \
+              --argjson timeout "$TIMEOUT" \
+              --argjson memory "$MEMORY" \
+              --rawfile zip build/zip.b64 \
+              --slurpfile vars build/variables.json \
+              '{
+                FunctionName: $fn,
+                Runtime: $runtime,
+                Handler: $handler,
+                Role: $role,
+                Timeout: $timeout,
+                MemorySize: $memory,
+                Architectures: ["x86_64"],
+                Code: {ZipFile: $zip},
+                Environment: {Variables: $vars[0]}
+              }' > build/create-function.json
+
             aws lambda create-function \
-              --function-name "$FUNCTION_NAME" \
-              --runtime "$RUNTIME" \
-              --handler "$HANDLER" \
-              --role "$LAMBDA_ROLE_ARN" \
-              --zip-file fileb://build/deployment.zip \
-              --timeout "$TIMEOUT" \
-              --memory-size "$MEMORY" \
-              --architectures x86_64 \
-              --environment "Variables=$VARIABLES" > /dev/null
+              --cli-input-json file://build/create-function.json > /dev/null
             aws lambda wait function-active-v2 --function-name "$FUNCTION_NAME"
           fi
 
