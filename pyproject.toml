@@ -1,0 +1,28 @@
+[project]
+name = "holded-stock-webhook"
+version = "0.1.0"
+description = "AWS Lambda that syncs Holded stock changes to Wink via their API"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.28,<1",
+    "pydantic>=2.10,<3",
+    "pydantic-settings>=2.7,<3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<9",
+    "pytest-mock>=3.14,<4",
+    "ruff>=0.9,<1",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
