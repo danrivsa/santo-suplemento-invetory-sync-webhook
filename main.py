@@ -6,7 +6,6 @@ import json
 
 from src.config import get_settings
 from src.handler import lambda_handler
-from src.wink_client import get_invenories
 
 
 def _sign(body: bytes, secret: str) -> str:

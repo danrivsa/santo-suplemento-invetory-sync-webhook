@@ -84,5 +84,5 @@ def get_invenories(config: Settings)->dict:
                                     "x-api-key": config.wink_api_key,
                                     "Content-Type": "application/json"
                                 })
-        result.raise_for_status();
+        result.raise_for_status()
         print(result.json())
