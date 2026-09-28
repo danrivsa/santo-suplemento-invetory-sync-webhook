@@ -1,0 +1,184 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FUNCTION_NAME: holded-stock-webhook
+  AWS_REGION: us-east-1
+  PYTHON_VERSION: "3.13"
+  HANDLER: src.handler.lambda_handler
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint, format and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install "$PYTHON_VERSION"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check src/ tests/ main.py
+
+      - name: Format check
+        run: uv run ruff format --check src/ tests/ main.py
+
+      - name: Run tests
+        run: uv run pytest tests/ -v
+
+  deploy:
+    name: Deploy to AWS Lambda
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install "$PYTHON_VERSION"
+
+      - name: Build deployment package
+        env:
+          UV_PYTHON: ${{ env.PYTHON_VERSION }}
+        run: |
+          mkdir -p build/package
+          uv export --frozen --no-dev --no-emit-project -o build/requirements.txt
+          uv pip install -r build/requirements.txt --target build/package
+          cp -r src build/package/src
+          find build/package -type d -name '__pycache__' -exec rm -rf {} + || true
+          (cd build/package && zip -qr ../deployment.zip .)
+          echo "Package size: $(du -h build/deployment.zip | cut -f1)"
+
+      - name: Verify package imports
+        run: |
+          PYTHONPATH=build/package uv run --no-project --python "$PYTHON_VERSION" python -c "
+          from src.handler import lambda_handler
+          print('Handler import OK:', lambda_handler.__name__)
+          "
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate secrets
+        env:
+          HOLDED_WEBHOOK_SECRET: ${{ secrets.HOLDED_WEBHOOK_SECRET }}
+          WINK_API_KEY: ${{ secrets.WINK_API_KEY }}
+          WINK_INVENTORY_IDS: ${{ secrets.WINK_INVENTORY_IDS }}
+          LAMBDA_ROLE_ARN: ${{ secrets.LAMBDA_ROLE_ARN }}
+        run: |
+          missing=0
+          for name in HOLDED_WEBHOOK_SECRET WINK_API_KEY WINK_INVENTORY_IDS LAMBDA_ROLE_ARN; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Secret $name is not set"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+      - name: Deploy to Lambda
+        env:
+          HOLDED_WEBHOOK_SECRET: ${{ secrets.HOLDED_WEBHOOK_SECRET }}
+          WINK_API_KEY: ${{ secrets.WINK_API_KEY }}
+          WINK_INVENTORY_IDS: ${{ secrets.WINK_INVENTORY_IDS }}
+          LAMBDA_ROLE_ARN: ${{ secrets.LAMBDA_ROLE_ARN }}
+        run: |
+          RUNTIME="python$PYTHON_VERSION"
+          TIMEOUT=30
+          MEMORY=256
+
+          # Built with jq so secrets containing quotes or backslashes cannot break the JSON.
+          VARIABLES=$(jq -n \
+            --arg secret "$HOLDED_WEBHOOK_SECRET" \
+            --arg key "$WINK_API_KEY" \
+            --arg inv "$WINK_INVENTORY_IDS" \
+            '{HOLDED_WEBHOOK_SECRET: $secret, WINK_API_KEY: $key, WINK_INVENTORY_IDS: $inv}')
+
+          if aws lambda get-function --function-name "$FUNCTION_NAME" >/dev/null 2>&1; then
+            echo "Updating existing function..."
+            aws lambda update-function-code \
+              --function-name "$FUNCTION_NAME" \
+              --zip-file fileb://build/deployment.zip > /dev/null
+            aws lambda wait function-updated-v2 --function-name "$FUNCTION_NAME"
+
+            aws lambda update-function-configuration \
+              --function-name "$FUNCTION_NAME" \
+              --runtime "$RUNTIME" \
+              --handler "$HANDLER" \
+              --timeout "$TIMEOUT" \
+              --memory-size "$MEMORY" \
+              --environment "Variables=$VARIABLES" > /dev/null
+            aws lambda wait function-updated-v2 --function-name "$FUNCTION_NAME"
+          else
+            echo "Creating new function..."
+            aws lambda create-function \
+              --function-name "$FUNCTION_NAME" \
+              --runtime "$RUNTIME" \
+              --handler "$HANDLER" \
+              --role "$LAMBDA_ROLE_ARN" \
+              --zip-file fileb://build/deployment.zip \
+              --timeout "$TIMEOUT" \
+              --memory-size "$MEMORY" \
+              --architectures x86_64 \
+              --environment "Variables=$VARIABLES" > /dev/null
+            aws lambda wait function-active-v2 --function-name "$FUNCTION_NAME"
+          fi
+
+      - name: Configure Function URL
+        run: |
+          CORS='{"AllowCredentials":false,"AllowHeaders":["content-type"],"AllowMethods":["POST"],"AllowOrigins":["*"]}'
+
+          if aws lambda get-function-url-config --function-name "$FUNCTION_NAME" >/dev/null 2>&1; then
+            aws lambda update-function-url-config \
+              --function-name "$FUNCTION_NAME" \
+              --auth-type NONE \
+              --cors "$CORS" > /dev/null
+          else
+            aws lambda create-function-url-config \
+              --function-name "$FUNCTION_NAME" \
+              --auth-type NONE \
+              --cors "$CORS" > /dev/null
+          fi
+
+          # get-policy succeeds if ANY policy exists, so match the statement id explicitly.
+          if ! aws lambda get-policy --function-name "$FUNCTION_NAME" 2>/dev/null | grep -q FunctionURLAllowPublicAccess; then
+            aws lambda add-permission \
+              --function-name "$FUNCTION_NAME" \
+              --statement-id FunctionURLAllowPublicAccess \
+              --action lambda:InvokeFunctionUrl \
+              --principal "*" \
+              --function-url-auth-type NONE > /dev/null
+          fi
+
+          URL=$(aws lambda get-function-url-config --function-name "$FUNCTION_NAME" --query FunctionUrl --output text)
+          echo "::notice::Deployed. Function URL: $URL"
+          echo "::notice::Register this URL as the Holded webhook target for stock.update and product.update."

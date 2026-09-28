@@ -259,7 +259,44 @@ This runs `main.py` which builds a sample event and calls `lambda_handler`. Make
 
 ## Deploying
 
-Deployment is handled via GitHub Actions. Pushing to `main` triggers the CI/CD pipeline which runs tests and deploys the Lambda. See `.github/workflows/deploy.yml` for details.
+Deployment is handled by `.github/workflows/deploy.yaml`.
+
+```mermaid
+flowchart LR
+    Push["push to main"] --> Test["test job<br/>ruff check · ruff format --check · pytest"]
+    Test -->|pass| Deploy["deploy job<br/>build zip · verify import"]
+    Deploy --> Aws["AWS Lambda<br/>holded-stock-webhook<br/>python3.13 · 256MB · 30s"]
+    Aws --> Url["Function URL<br/>webhook target for Holded"]
+    PR["pull request"] -.-> Test
+    Test -.->|fails| NoDeploy["no deploy"]
+```
+
+The `test` job runs on every push and pull request. The `deploy` job has `needs: test`, so it only runs when the checks pass and only on `main` (never on pull requests). It can also be triggered manually with **Actions → CI/CD → Run workflow**.
+
+### Required repository secrets
+
+| Secret | Value |
+|--------|-------|
+| `AWS_ACCESS_KEY_ID` | IAM key with permission to update the Lambda |
+| `AWS_SECRET_ACCESS_KEY` | Same IAM key's secret |
+| `LAMBDA_ROLE_ARN` | Execution role ARN, only used when the function is first created |
+| `HOLDED_WEBHOOK_SECRET` | Same value as `HOLDED_WEBHOOK_SECRET` in your local `.env` |
+| `WINK_API_KEY` | Same value as `WINK_API_KEY` in your local `.env` |
+| `WINK_INVENTORY_IDS` | Same value as `WINK_INVENTORY_IDS` in your local `.env` |
+
+A missing secret fails the run with an explicit `::error::` message rather than deploying a broken function.
+
+### What the deploy job does
+
+1. Exports and installs production dependencies into `build/package` and copies `src/` alongside them.
+2. Zips it (about 3 MB) and asserts that `src.handler.lambda_handler` imports from the built package, so a wrong handler path fails in CI instead of in production.
+3. Creates the function on first run, or updates code and configuration on later runs.
+4. Creates or updates the Function URL and makes it publicly invokable, then prints the URL.
+
+The Lambda has no `.env` file: pydantic-settings reads `HOLDED_WEBHOOK_SECRET`, `WINK_API_KEY` and `WINK_INVENTORY_IDS` from the function's environment variables, which the workflow sets from the secrets above. Register the printed URL in Holded for the `stock.update` and `product.update` events.
+
+The function URL uses `--auth-type NONE`, so requests are unauthenticated at the transport level. The HMAC signature check in the handler is the actual authentication, so `HOLDED_WEBHOOK_SECRET` must be set both in Holded and in the Lambda.
+
 
 ## License
 
