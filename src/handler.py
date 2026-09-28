@@ -7,7 +7,7 @@ import logging
 from src.config import Settings, get_settings
 from src.models import HoldedProductPayload, HoldedStockPayload
 from src.signature import verify_signature
-from src.wink_client import adjust_price, adjust_stock, get_invenories
+from src.wink_client import adjust_price, adjust_stock
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
