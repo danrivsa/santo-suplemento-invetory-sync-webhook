@@ -80,7 +80,7 @@ PRODUCT_EVENT_BODY = {
 
 
 def main() -> None:
-        
+
     secret = get_settings().held_webhook_secret
     for event_type, payload in (
         ("stock.update", STOCK_EVENT_BODY),

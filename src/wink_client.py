@@ -77,12 +77,12 @@ def adjust_price(sku: str, price: float, config: Settings) -> dict:
     logger.info("Wink update-price response: %s", result)
     return result
 
-def get_invenories(config: Settings)->dict:
+
+def get_invenories(config: Settings) -> dict:
     with httpx.Client(timeout=10) as client:
-        result = client.get(f"{WINK_BASE_URL}/inventories",
-                                headers={
-                                    "x-api-key": config.wink_api_key,
-                                    "Content-Type": "application/json"
-                                })
+        result = client.get(
+            f"{WINK_BASE_URL}/inventories",
+            headers={"x-api-key": config.wink_api_key, "Content-Type": "application/json"},
+        )
         result.raise_for_status()
         print(result.json())
