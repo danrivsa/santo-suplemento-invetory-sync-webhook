@@ -12,7 +12,7 @@ def _sign(body: bytes, secret: str) -> str:
     return hmac.new(key=secret.encode(), msg=body, digestmod=hashlib.sha256).hexdigest()
 
 
-def _build_event(event_type: str, payload: dict, secret: str) -> dict:
+def _build_event(event_type: str, payload: dict, secret: str, webhook_id: str = "evt_test_001") -> dict:
     body = json.dumps(payload).encode()
     return {
         "httpMethod": "POST",
@@ -21,7 +21,7 @@ def _build_event(event_type: str, payload: dict, secret: str) -> dict:
             "Content-Type": "application/json",
             "x-holded-webhook-event": event_type,
             "x-holded-webhook-signature": f"sha256={_sign(body, secret)}",
-            "x-holded-webhook-id": "evt_test_001",
+            "x-holded-webhook-id": webhook_id,
         },
         "body": body.decode(),
     }
@@ -44,6 +44,14 @@ STOCK_EVENT_BODY = {
     "idOriginChange": None,
     "docHash": None,
     "hash": None,
+}
+
+SALE_EVENT_BODY = {
+    **STOCK_EVENT_BODY,
+    "stockVariation": -1,
+    "description": "Venta Wink ID 3795",
+    "action": "sales_receipt_stock_update",
+    "idOriginChange": "6a33d22b2fa645a14c024bd0",
 }
 
 PRODUCT_EVENT_BODY = {
@@ -81,13 +89,16 @@ PRODUCT_EVENT_BODY = {
 
 def main() -> None:
 
-    secret = get_settings().held_webhook_secret
-    for event_type, payload in (
-        ("stock.update", STOCK_EVENT_BODY),
-        ("product.update", PRODUCT_EVENT_BODY),
+    settings = get_settings()
+    print(f"sync allowlist: {sorted(settings.holded_stock_sync_action_set) or 'disabled (syncs every action)'}")
+
+    for webhook_id, event_type, payload in (
+        ("evt_manual", "stock.update", STOCK_EVENT_BODY),
+        ("evt_sale", "stock.update", SALE_EVENT_BODY),
+        ("evt_price", "product.update", PRODUCT_EVENT_BODY),
     ):
-        print(f"\n=== {event_type} ===")
-        response = lambda_handler(_build_event(event_type, payload, secret), None)
+        print(f"\n=== {event_type} {payload.get('action') or payload.get('id')} ===")
+        response = lambda_handler(_build_event(event_type, payload, settings.holded_webhook_secret, webhook_id), None)
         print(json.dumps(response, indent=2))
 
 

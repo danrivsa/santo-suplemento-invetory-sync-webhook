@@ -111,6 +111,7 @@ jobs:
           WINK_API_KEY: ${{ secrets.WINK_API_KEY }}
           WINK_INVENTORY_IDS: ${{ secrets.WINK_INVENTORY_IDS }}
           LAMBDA_ROLE_ARN: ${{ secrets.LAMBDA_ROLE_ARN }}
+          HOLDED_STOCK_SYNC_ACTIONS: ${{ vars.HOLDED_STOCK_SYNC_ACTIONS }}
         run: |
           RUNTIME="python$PYTHON_VERSION"
           TIMEOUT=30
@@ -126,7 +127,9 @@ jobs:
             --arg secret "$HOLDED_WEBHOOK_SECRET" \
             --arg key "$WINK_API_KEY" \
             --arg inv "$WINK_INVENTORY_IDS" \
-            '{HOLDED_WEBHOOK_SECRET: $secret, WINK_API_KEY: $key, WINK_INVENTORY_IDS: $inv}' \
+            --arg actions "${HOLDED_STOCK_SYNC_ACTIONS:-}" \
+            '{HOLDED_WEBHOOK_SECRET: $secret, WINK_API_KEY: $key, WINK_INVENTORY_IDS: $inv,
+              HOLDED_STOCK_SYNC_ACTIONS: $actions}' \
             > build/variables.json
 
           if aws lambda get-function --function-name "$FUNCTION_NAME" >/dev/null 2>&1; then

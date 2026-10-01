@@ -39,7 +39,7 @@ flowchart LR
 
 | `x-holded-webhook-event` | Action | Wink endpoint |
 |--------------------------|--------|---------------|
-| `stock.update` | Apply `stockVariation` as a delta | `adjust-stock-by-sku` |
+| `stock.update` | Apply `stockVariation` as a delta, if its `action` passes the sync allowlist | `adjust-stock-by-sku` |
 | `product.update` | Push `price` for each SKU | `update-price-by-sku` |
 | anything else | `200 {"status": "ignored"}` | — |
 
@@ -71,11 +71,17 @@ sequenceDiagram
         L->>L: _extract_header("x-holded-webhook-event")
 
         alt stock.update
+            L->>L: _extract_header("x-holded-webhook-id")
+            alt webhook id already applied
+                L-->>H: 200 skipped — duplicate_webhook_id
+            end
             L->>M: HoldedStockPayload.model_validate_json()
             alt empty sku
                 L-->>H: 400 Missing sku
             else stockVariation is zero
                 L-->>H: 200 skipped — zero_variation
+            else action outside the sync allowlist
+                L-->>H: 200 skipped — action_not_allowed
             else adjustment needed
                 L->>W: adjust_stock(sku, variation, config)
                 Note over W: positive variation maps to add<br/>negative variation maps to subtract<br/>quantity is the truncated absolute value
@@ -237,9 +243,50 @@ This runs `main.py` which builds a sample event and calls `lambda_handler`. Make
 1. Holded fires a `stock.update` or `product.update` webhook.
 2. The Lambda verifies the HMAC-SHA256 signature before doing anything else.
 3. It routes on the `x-holded-webhook-event` header.
-4. `stock.update` → applies the `stockVariation` delta via `adjust-stock-by-sku`.
+4. `stock.update` → applies the `stockVariation` delta via `adjust-stock-by-sku`, unless its `action` fails the sync allowlist.
 5. `product.update` → pushes `price` per SKU via `update-price-by-sku`.
 6. Any other event is acknowledged with `200 {"status": "ignored"}` so Holded does not retry it.
+
+### Stock sync rules
+
+**`HOLDED_STOCK_SYNC_ACTIONS` exists to break a feedback loop.** A Wink sale lowers
+Wink's own stock, and approving the sales receipt that `wink-sale-integration`
+created in Holded lowers Holded's stock. Forwarding that second movement to Wink
+deducts the same units twice, so the guard is an allowlist on the Holded
+`action` field:
+
+- Only actions listed in `HOLDED_STOCK_SYNC_ACTIONS` are forwarded. Anything else — including actions Holded has not documented yet, and `action: null` — is skipped, so an unrecognised movement fails closed instead of double-deducting.
+- An empty `HOLDED_STOCK_SYNC_ACTIONS` disables the guard and syncs every action. That is the pre-guard behaviour, useful for observation but not for production.
+- Skipped events return `200`, so Holded does not retry them.
+- The check runs after the empty-sku and zero-variation guards, so those reasons still win when they apply.
+
+Note that `providerOriginChange` cannot do this job: Holded documents it as the
+*external* provider (shopify, woocommerce) and it is `null` for movements that
+originate from a native Holded document, which is exactly the Wink sale case.
+
+Find the real action values before choosing the allowlist: `main.py` and the
+deployed Lambda log `action`, `description` and the origin fields on every
+`stock.update`, so one test sale in CloudWatch is enough to enumerate them.
+
+### Deduplication
+
+`x-holded-webhook-id` is Holded's idempotency key, and Holded auto-retries
+deliveries. Since `adjust-stock-by-sku` applies a delta rather than an absolute
+value, a redelivered `stock.update` would deduct the same units again. The
+handler therefore records successful `stock.update` webhook ids in a
+`time.monotonic()`-stamped cache with a 24h TTL and skips repeats with
+`duplicate_webhook_id`.
+
+Two caveats worth knowing:
+
+- The cache is per container, so it narrows the retry window but cannot close it
+  against a cold start. Durable dedupe would need shared storage such as
+  DynamoDB.
+- An id is recorded only after the outcome settles, so a delivery that raised
+  stays retryable instead of being swallowed by a duplicate check.
+
+`product.update` is not deduplicated because price sync is absolute and already
+idempotent.
 
 ### Price sync rules
 
@@ -252,7 +299,7 @@ This runs `main.py` which builds a sample event and calls `lambda_handler`. Make
 
 | Status | When |
 |--------|------|
-| `200` | Stock adjusted, prices synced, or skipped (`zero_variation`, `no_price_targets`, `ignored`) |
+| `200` | Stock adjusted, prices synced, or skipped (`zero_variation`, `action_not_allowed`, `duplicate_webhook_id`, `no_price_targets`, `ignored`) |
 | `400` | `stock.update` payload has an empty `sku` |
 | `401` | Signature header missing or HMAC mismatch |
 | `500` | Unhandled error, or at least one SKU failed during `product.update` |
@@ -284,6 +331,11 @@ The `test` job runs on every push and pull request. The `deploy` job has `needs:
 | `WINK_API_KEY` | Same value as `WINK_API_KEY` in your local `.env` |
 | `WINK_INVENTORY_IDS` | Same value as `WINK_INVENTORY_IDS` in your local `.env` |
 
+`HOLDED_STOCK_SYNC_ACTIONS` is not a secret: set it as a repository **variable**
+(Repository → Settings → Secrets and variables → Actions → Variables) named
+`HOLDED_STOCK_SYNC_ACTIONS`. If it is absent the deploy still succeeds and ships
+an empty allowlist, which syncs every action.
+
 A missing secret fails the run with an explicit `::error::` message rather than deploying a broken function.
 
 ### What the deploy job does
@@ -293,7 +345,7 @@ A missing secret fails the run with an explicit `::error::` message rather than 
 3. Creates the function on first run, or updates code and configuration on later runs.
 4. Creates or updates the Function URL and makes it publicly invokable, then prints the URL.
 
-The Lambda has no `.env` file: pydantic-settings reads `HOLDED_WEBHOOK_SECRET`, `WINK_API_KEY` and `WINK_INVENTORY_IDS` from the function's environment variables, which the workflow sets from the secrets above. Register the printed URL in Holded for the `stock.update` and `product.update` events.
+The Lambda has no `.env` file: pydantic-settings reads `HOLDED_WEBHOOK_SECRET`, `WINK_API_KEY`, `WINK_INVENTORY_IDS` and `HOLDED_STOCK_SYNC_ACTIONS` from the function's environment variables, which the workflow sets from the secrets and repository variables above. Register the printed URL in Holded for the `stock.update` and `product.update` events.
 
 The function URL uses `--auth-type NONE`, so requests are unauthenticated at the transport level. The HMAC signature check in the handler is the actual authentication, so `HOLDED_WEBHOOK_SECRET` must be set both in Holded and in the Lambda.
 
