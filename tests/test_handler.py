@@ -5,17 +5,7 @@ import hashlib
 import hmac
 import json
 
-import pytest
-
-import src.handler
 from src.handler import lambda_handler
-
-
-@pytest.fixture(autouse=True)
-def _clear_dedupe_cache():
-    src.handler._seen_webhook_ids.clear()
-    yield
-    src.handler._seen_webhook_ids.clear()
 
 
 def _sign(body: bytes, secret: str) -> str:
@@ -27,15 +17,13 @@ API_KEY = "wink_test_key"
 INVENTORY_ID = 12
 
 
-def _make_event(payload: dict, secret: str = SECRET, event: str = "stock.update", webhook_id: str = "") -> dict:
+def _make_event(payload: dict, secret: str = SECRET, event: str = "stock.update") -> dict:
     body = json.dumps(payload).encode()
     sig = _sign(body, secret)
     headers = {
         "x-holded-webhook-signature": f"sha256={sig}",
         "x-holded-webhook-event": event,
     }
-    if webhook_id:
-        headers["x-holded-webhook-id"] = webhook_id
     return {
         "body": body.decode(),
         "isBase64Encoded": False,
@@ -63,15 +51,10 @@ VALID_PAYLOAD = {
 }
 
 
-def resp_body_reason(resp: dict) -> str:
-    return json.loads(resp["body"]).get("reason", "")
-
-
-def _patch_settings(monkeypatch, sync_actions: str = ""):
+def _patch_settings(monkeypatch):
     monkeypatch.setenv("HOLDED_WEBHOOK_SECRET", SECRET)
     monkeypatch.setenv("WINK_API_KEY", API_KEY)
     monkeypatch.setenv("WINK_INVENTORY_IDS", str(INVENTORY_ID))
-    monkeypatch.setenv("HOLDED_STOCK_SYNC_ACTIONS", sync_actions)
 
 
 def test_missing_signature_returns_401(monkeypatch):
@@ -98,44 +81,109 @@ def test_invalid_signature_returns_401(monkeypatch):
     assert "Invalid signature" in resp["body"]
 
 
-def test_valid_stock_increase(monkeypatch, mocker):
+def test_stock_update_syncs_variant_stock(monkeypatch, mocker):
     _patch_settings(monkeypatch)
-    mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
+    stock = mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
 
     resp = lambda_handler(_make_event(VALID_PAYLOAD), None)
+
     assert resp["statusCode"] == 200
     body = json.loads(resp["body"])
     assert body["status"] == "ok"
+    stock.assert_called_once_with(sku="ABC-123", quantity=50, config=stock.call_args.kwargs["config"])
 
 
-def test_valid_stock_decrease(monkeypatch, mocker):
+def test_stock_update_without_variant_uses_calculated_stock(monkeypatch, mocker):
     _patch_settings(monkeypatch)
-    mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
+    stock = mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
+
+    payload = {**VALID_PAYLOAD, "variantId": ""}
+    resp = lambda_handler(_make_event(payload), None)
+
+    assert resp["statusCode"] == 200
+    stock.assert_called_once()
+    assert stock.call_args.kwargs["quantity"] == 105
+
+
+def test_stock_update_with_whitespace_variant_id_uses_calculated_stock(monkeypatch, mocker):
+    _patch_settings(monkeypatch)
+    stock = mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
+
+    payload = {**VALID_PAYLOAD, "variantId": "   "}
+    lambda_handler(_make_event(payload), None)
+
+    assert stock.call_args.kwargs["quantity"] == 105
+
+
+def test_zero_variation_is_still_synced(monkeypatch, mocker):
+    _patch_settings(monkeypatch)
+    stock = mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
+
+    payload = {**VALID_PAYLOAD, "stockVariation": 0}
+    resp = lambda_handler(_make_event(payload), None)
+
+    assert resp["statusCode"] == 200
+    assert json.loads(resp["body"])["status"] == "ok"
+    stock.assert_called_once()
+
+
+def test_negative_variation_is_still_synced(monkeypatch, mocker):
+    _patch_settings(monkeypatch)
+    stock = mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
 
     payload = {**VALID_PAYLOAD, "stockVariation": -3}
     resp = lambda_handler(_make_event(payload), None)
+
     assert resp["statusCode"] == 200
-    body = json.loads(resp["body"])
-    assert body["status"] == "ok"
+    stock.assert_called_once()
 
 
-def test_zero_variation_skips(monkeypatch):
+def test_sale_action_is_synced(monkeypatch, mocker):
     _patch_settings(monkeypatch)
-    payload = {**VALID_PAYLOAD, "stockVariation": 0}
+    stock = mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
+
+    payload = {**VALID_PAYLOAD, "action": "sales_receipt_stock_update", "stockVariation": -1}
     resp = lambda_handler(_make_event(payload), None)
+
     assert resp["statusCode"] == 200
-    body = json.loads(resp["body"])
-    assert body["status"] == "skipped"
-    assert body["reason"] == "zero_variation"
+    assert json.loads(resp["body"])["status"] == "ok"
+    stock.assert_called_once()
 
 
-def test_empty_sku_returns_400(monkeypatch):
+def test_unknown_action_is_synced(monkeypatch, mocker):
     _patch_settings(monkeypatch)
+    stock = mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
+
+    payload = {**VALID_PAYLOAD, "action": "some_action_holded_added_later"}
+    resp = lambda_handler(_make_event(payload), None)
+
+    assert resp["statusCode"] == 200
+    assert json.loads(resp["body"])["status"] == "ok"
+    stock.assert_called_once()
+
+
+def test_null_action_is_synced(monkeypatch, mocker):
+    _patch_settings(monkeypatch)
+    stock = mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
+
+    payload = {**VALID_PAYLOAD, "action": None}
+    resp = lambda_handler(_make_event(payload), None)
+
+    assert resp["statusCode"] == 200
+    assert json.loads(resp["body"])["status"] == "ok"
+    stock.assert_called_once()
+
+
+def test_empty_sku_returns_400(monkeypatch, mocker):
+    _patch_settings(monkeypatch)
+    stock = mocker.patch("src.handler.adjust_stock")
     payload = {**VALID_PAYLOAD, "sku": ""}
+
     resp = lambda_handler(_make_event(payload), None)
+
     assert resp["statusCode"] == 400
-    body = json.loads(resp["body"])
-    assert "Missing sku" in body["error"]
+    assert "Missing sku" in json.loads(resp["body"])["error"]
+    stock.assert_not_called()
 
 
 def test_wink_client_error_returns_500(monkeypatch, mocker):
@@ -146,6 +194,34 @@ def test_wink_client_error_returns_500(monkeypatch, mocker):
     assert resp["statusCode"] == 500
     body = json.loads(resp["body"])
     assert "Internal server error" in body["error"]
+
+
+def test_wink_partial_failure_still_returns_200(monkeypatch, mocker):
+    """Wink answers 200 with per-item failures; a retry would not fix them."""
+    _patch_settings(monkeypatch)
+    mocker.patch(
+        "src.handler.adjust_stock",
+        return_value={
+            "summary": {"adjustmentsUpdated": 0, "adjustmentsFailed": 1},
+            "results": [{"sku": "ABC-123", "status": "failed", "reasons": {"sku_not_found": 1}}],
+        },
+    )
+
+    resp = lambda_handler(_make_event(VALID_PAYLOAD), None)
+
+    assert resp["statusCode"] == 200
+    assert json.loads(resp["body"])["status"] == "ok"
+
+
+def test_repeated_webhook_id_is_synced_again(monkeypatch, mocker):
+    """replace is idempotent, so redeliveries need no dedupe."""
+    _patch_settings(monkeypatch)
+    stock = mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
+
+    lambda_handler(_make_event(VALID_PAYLOAD), None)
+    lambda_handler(_make_event(VALID_PAYLOAD), None)
+
+    assert stock.call_count == 2
 
 
 def test_base64_encoded_body(monkeypatch, mocker):
@@ -182,7 +258,7 @@ PRODUCT_PAYLOAD = {
             "sku": "CREA-500",
             "barcode": None,
             "price": "10.00",
-            "cost": "5.00",
+            "cost": "6.00",
             "stock": "50",
             "description": "500 g",
         },
@@ -347,178 +423,11 @@ def test_signature_is_checked_before_event_routing(monkeypatch, mocker):
     price.assert_not_called()
 
 
-ALLOWED_ACTIONS = "manual_stock_update,stock_reception"
-SALE_ACTION = "sales_receipt_stock_update"
-
-
-def test_allowlisted_action_is_synced(monkeypatch, mocker):
-    _patch_settings(monkeypatch, sync_actions=ALLOWED_ACTIONS)
-    stock = mocker.patch("src.handler.adjust_stock", return_value=_OK)
-
-    resp = lambda_handler(_make_event(VALID_PAYLOAD), None)
-
-    assert resp["statusCode"] == 200
-    assert json.loads(resp["body"])["status"] == "ok"
-    stock.assert_called_once()
-
-
-def test_allowlist_tolerates_surrounding_whitespace(monkeypatch, mocker):
-    _patch_settings(monkeypatch, sync_actions=" manual_stock_update , stock_reception ")
-    stock = mocker.patch("src.handler.adjust_stock", return_value=_OK)
-
-    resp = lambda_handler(_make_event(VALID_PAYLOAD), None)
-
-    assert json.loads(resp["body"])["status"] == "ok"
-    stock.assert_called_once()
-
-
-def test_sale_action_is_not_synced(monkeypatch, mocker):
-    _patch_settings(monkeypatch, sync_actions=ALLOWED_ACTIONS)
-    stock = mocker.patch("src.handler.adjust_stock", return_value=_OK)
-    payload = {**VALID_PAYLOAD, "action": SALE_ACTION, "stockVariation": -1}
-
-    resp = lambda_handler(_make_event(payload), None)
-
-    assert resp["statusCode"] == 200
-    body = json.loads(resp["body"])
-    assert body == {"status": "skipped", "reason": "action_not_allowed", "action": SALE_ACTION}
-    stock.assert_not_called()
-
-
-def test_undocumented_action_fails_closed(monkeypatch, mocker):
-    _patch_settings(monkeypatch, sync_actions=ALLOWED_ACTIONS)
-    stock = mocker.patch("src.handler.adjust_stock", return_value=_OK)
-    payload = {**VALID_PAYLOAD, "action": "some_action_holded_added_later"}
-
-    resp = lambda_handler(_make_event(payload), None)
-
-    assert json.loads(resp["body"])["reason"] == "action_not_allowed"
-    stock.assert_not_called()
-
-
-def test_null_action_fails_closed(monkeypatch, mocker):
-    _patch_settings(monkeypatch, sync_actions=ALLOWED_ACTIONS)
-    stock = mocker.patch("src.handler.adjust_stock", return_value=_OK)
-    payload = {**VALID_PAYLOAD, "action": None}
-
-    resp = lambda_handler(_make_event(payload), None)
-
-    assert resp["statusCode"] == 200
-    body = json.loads(resp["body"])
-    assert body["reason"] == "action_not_allowed"
-    assert body["action"] == "<null>"
-    stock.assert_not_called()
-
-
-def test_empty_allowlist_syncs_every_action(monkeypatch, mocker):
-    _patch_settings(monkeypatch, sync_actions="")
-    stock = mocker.patch("src.handler.adjust_stock", return_value=_OK)
-    payload = {**VALID_PAYLOAD, "action": SALE_ACTION}
-
-    resp = lambda_handler(_make_event(payload), None)
-
-    assert json.loads(resp["body"])["status"] == "ok"
-    stock.assert_called_once()
-
-
-def test_empty_sku_outranks_the_allowlist(monkeypatch):
-    _patch_settings(monkeypatch, sync_actions=ALLOWED_ACTIONS)
-    payload = {**VALID_PAYLOAD, "sku": "", "action": SALE_ACTION}
-
-    resp = lambda_handler(_make_event(payload), None)
-
-    assert resp["statusCode"] == 400
-    assert "Missing sku" in json.loads(resp["body"])["error"]
-
-
-def test_zero_variation_outranks_the_allowlist(monkeypatch):
-    _patch_settings(monkeypatch, sync_actions=ALLOWED_ACTIONS)
-    payload = {**VALID_PAYLOAD, "stockVariation": 0, "action": SALE_ACTION}
-
-    resp = lambda_handler(_make_event(payload), None)
-
-    assert json.loads(resp["body"])["reason"] == "zero_variation"
-
-
-def test_allowlist_does_not_affect_price_sync(monkeypatch, mocker):
-    _patch_settings(monkeypatch, sync_actions=ALLOWED_ACTIONS)
-    price = mocker.patch("src.handler.adjust_price", return_value=_OK)
-
-    resp = lambda_handler(_product_event(PRODUCT_PAYLOAD), None)
-
-    assert json.loads(resp["body"])["status"] == "ok"
-    assert price.call_count == 2
-
-
-def test_repeated_webhook_id_is_skipped(monkeypatch, mocker):
-    _patch_settings(monkeypatch)
-    stock = mocker.patch("src.handler.adjust_stock", return_value=_OK)
-    payload = {**VALID_PAYLOAD, "stockVariation": -1}
-
-    first = lambda_handler(_make_event(payload, webhook_id="evt_1"), None)
-    second = lambda_handler(_make_event(payload, webhook_id="evt_1"), None)
-
-    assert json.loads(first["body"])["status"] == "ok"
-    assert resp_body_reason(second) == "duplicate_webhook_id"
-    stock.assert_called_once()
-
-
-def test_distinct_webhook_ids_are_both_applied(monkeypatch, mocker):
-    _patch_settings(monkeypatch)
-    stock = mocker.patch("src.handler.adjust_stock", return_value=_OK)
-
-    lambda_handler(_make_event(VALID_PAYLOAD, webhook_id="evt_1"), None)
-    lambda_handler(_make_event(VALID_PAYLOAD, webhook_id="evt_2"), None)
-
-    assert stock.call_count == 2
-
-
-def test_retry_after_failure_is_not_deduplicated(monkeypatch, mocker):
-    _patch_settings(monkeypatch)
-    stock = mocker.patch("src.handler.adjust_stock", side_effect=[Exception("Wink down"), _OK])
-    payload = {**VALID_PAYLOAD, "stockVariation": -1}
-
-    failed = lambda_handler(_make_event(payload, webhook_id="evt_1"), None)
-    retried = lambda_handler(_make_event(payload, webhook_id="evt_1"), None)
-
-    assert failed["statusCode"] == 500
-    assert json.loads(retried["body"])["status"] == "ok"
-    assert stock.call_count == 2
-
-
-def test_blocked_action_is_recorded_so_a_retry_stays_blocked(monkeypatch, mocker):
-    _patch_settings(monkeypatch, sync_actions=ALLOWED_ACTIONS)
-    stock = mocker.patch("src.handler.adjust_stock", return_value=_OK)
-    payload = {**VALID_PAYLOAD, "action": SALE_ACTION, "stockVariation": -1}
-
-    first = lambda_handler(_make_event(payload, webhook_id="evt_1"), None)
-    second = lambda_handler(_make_event(payload, webhook_id="evt_1"), None)
-
-    assert resp_body_reason(first) == "action_not_allowed"
-    assert resp_body_reason(second) == "duplicate_webhook_id"
-    stock.assert_not_called()
-
-
-def test_price_sync_is_not_deduplicated(monkeypatch, mocker):
+def test_price_sync_is_not_affected_by_stock_events(monkeypatch, mocker):
     _patch_settings(monkeypatch)
     price = mocker.patch("src.handler.adjust_price", return_value=_OK)
 
-    lambda_handler(_make_event(PRODUCT_PAYLOAD, event="product.update", webhook_id="evt_1"), None)
-    lambda_handler(_make_event(PRODUCT_PAYLOAD, event="product.update", webhook_id="evt_1"), None)
+    lambda_handler(_make_event(PRODUCT_PAYLOAD, event="product.update"), None)
+    lambda_handler(_make_event(PRODUCT_PAYLOAD, event="product.update"), None)
 
     assert price.call_count == 4
-
-
-def test_signature_is_checked_before_the_dedupe_lookup(monkeypatch, mocker):
-    _patch_settings(monkeypatch)
-    stock = mocker.patch("src.handler.adjust_stock", return_value=_OK)
-    payload = {**VALID_PAYLOAD, "stockVariation": -1}
-
-    lambda_handler(_make_event(payload, webhook_id="evt_1"), None)
-    forged = _make_event(payload, webhook_id="evt_1")
-    forged["headers"]["x-holded-webhook-signature"] = "sha256=invalid"
-
-    resp = lambda_handler(forged, None)
-
-    assert resp["statusCode"] == 401
-    stock.assert_called_once()

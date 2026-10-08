@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import time
 
 from src.config import Settings, get_settings
 from src.models import HoldedProductPayload, HoldedStockPayload
@@ -15,32 +14,6 @@ logger.setLevel(logging.INFO)
 
 EVENT_STOCK_UPDATE = "stock.update"
 EVENT_PRODUCT_UPDATE = "product.update"
-
-WEBHOOK_ID_HEADER = "x-holded-webhook-id"
-DEDUPE_TTL_SECONDS = 24 * 60 * 60
-
-# Holded auto-retries deliveries, and adjust-stock-by-sku applies a delta, so a
-# retried stock.update would deduct the same units twice. Scoped per container:
-# it shrinks the retry window but cannot close it against a cold start.
-_seen_webhook_ids: dict[str, float] = {}
-
-
-def _prune_seen_webhook_ids(now: float) -> None:
-    for key in [k for k, seen_at in _seen_webhook_ids.items() if now - seen_at > DEDUPE_TTL_SECONDS]:
-        del _seen_webhook_ids[key]
-
-
-def _is_duplicate_webhook(webhook_id: str) -> bool:
-    """Whether this delivery already completed successfully."""
-    now = time.monotonic()
-    _prune_seen_webhook_ids(now)
-    return webhook_id in _seen_webhook_ids
-
-
-def _mark_webhook_applied(webhook_id: str) -> None:
-    now = time.monotonic()
-    _prune_seen_webhook_ids(now)
-    _seen_webhook_ids[webhook_id] = now
 
 
 def _extract_body(event: dict) -> bytes:
@@ -86,33 +59,26 @@ def _extract_price_targets(payload: HoldedProductPayload) -> list[tuple[str, flo
     return targets
 
 
-def _stock_sync_block_reason(payload: HoldedStockPayload, config: Settings) -> str | None:
-    """Return why a stock.update must not reach Wink, or None to sync it.
+def _stock_target(payload: HoldedStockPayload) -> float:
+    """Absolute stock to push to Wink for this stock.update.
 
-    Holded lowers stock when a sales receipt is approved, and Wink already
-    lowered it when the sale was made, so forwarding that movement deducts the
-    units twice. Only actions named in the allowlist are synced; the check
-    ignores unknown and null actions rather than assuming they are safe.
-
-    An empty allowlist disables the guard, which syncs every action.
+    Wink tracks existence per variant when a product has variants, and rejects
+    the parent SKU with ``product_has_variants``, so a variant movement must
+    sync the variant's own stock. Everything else syncs the product's stock.
     """
-    allowed = config.holded_stock_sync_action_set
-    if not allowed:
-        return None
-
-    action = (payload.action or "").strip()
-    if action in allowed:
-        return None
-
-    return action or "<null>"
+    if payload.variant_id.strip():
+        return payload.calculated_variant_stock
+    return payload.calculated_stock
 
 
 def _handle_stock_update(raw_body: bytes, config: Settings) -> tuple[int, dict]:
     payload = HoldedStockPayload.model_validate_json(raw_body)
+    target = _stock_target(payload)
     logger.info(
-        "Received stock.update for sku=%s variation=%.2f action=%r warehouse=%s "
+        "Received stock.update for sku=%s target=%.2f variation=%.2f action=%r warehouse=%s "
         "provider_origin=%r id_origin=%r description=%r",
         payload.sku,
+        target,
         payload.stock_variation,
         payload.action,
         payload.warehouse_id,
@@ -125,26 +91,26 @@ def _handle_stock_update(raw_body: bytes, config: Settings) -> tuple[int, dict]:
         logger.warning("Empty sku in payload, skipping")
         return 400, {"error": "Missing sku"}
 
-    if payload.stock_variation == 0:
-        logger.info("Stock variation is zero, skipping")
-        return 200, {"status": "skipped", "reason": "zero_variation"}
-
-    blocked_action = _stock_sync_block_reason(payload, config)
-    if blocked_action is not None:
-        logger.info(
-            "Skipping stock.update for sku=%s: action=%r is not in the sync allowlist",
-            payload.sku,
-            blocked_action,
-        )
-        return 200, {"status": "skipped", "reason": "action_not_allowed", "action": blocked_action}
-
     result = adjust_stock(
         sku=payload.sku,
-        stock_variation=payload.stock_variation,
+        quantity=target,
         config=config,
     )
+    _log_wink_rejections(payload.sku, result)
 
     return 200, {"status": "ok", "result": result}
+
+
+def _log_wink_rejections(sku: str, result: dict) -> None:
+    """Warn about adjustments Wink accepted but did not apply.
+
+    ``adjust-stock-by-sku`` answers 200 even when an item failed, per result.
+    Retrying would not fix a rejection such as ``sku_not_found`` or
+    ``product_has_variants``, so the delivery still returns 200 to Holded.
+    """
+    for row in result.get("results") or []:
+        if isinstance(row, dict) and row.get("status") in {"failed", "partial"}:
+            logger.warning("Wink did not fully apply stock for sku=%s: %s", sku, row)
 
 
 def _handle_product_update(raw_body: bytes, config: Settings) -> tuple[int, dict]:
@@ -197,25 +163,14 @@ def lambda_handler(event: dict, context: object) -> dict:  # noqa: ARG001
             return _response(401, {"error": "Invalid signature"})
 
         event_type = _extract_header(event, "x-holded-webhook-event")
-        webhook_id = _extract_header(event, WEBHOOK_ID_HEADER)
-        is_stock_event = event_type == EVENT_STOCK_UPDATE
 
-        if is_stock_event and webhook_id and _is_duplicate_webhook(webhook_id):
-            logger.info("Skipping already applied stock.update webhook id=%s", webhook_id)
-            return _response(200, {"status": "skipped", "reason": "duplicate_webhook_id"})
-
-        if is_stock_event:
+        if event_type == EVENT_STOCK_UPDATE:
             status_code, body = _handle_stock_update(raw_body, config)
         elif event_type == EVENT_PRODUCT_UPDATE:
             status_code, body = _handle_product_update(raw_body, config)
         else:
             logger.info("Ignoring unsupported webhook event: %s", event_type or "<missing>")
             status_code, body = 200, {"status": "ignored", "event": event_type}
-
-        # Recorded only once the outcome is settled, so a delivery that raised
-        # stays retryable instead of being swallowed by a duplicate check.
-        if is_stock_event and webhook_id and status_code < 300:
-            _mark_webhook_applied(webhook_id)
 
         return _response(status_code, body)
 

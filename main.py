@@ -90,7 +90,6 @@ PRODUCT_EVENT_BODY = {
 def main() -> None:
 
     settings = get_settings()
-    print(f"sync allowlist: {sorted(settings.holded_stock_sync_action_set) or 'disabled (syncs every action)'}")
 
     for webhook_id, event_type, payload in (
         ("evt_manual", "stock.update", STOCK_EVENT_BODY),

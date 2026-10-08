@@ -12,24 +12,22 @@ logger = logging.getLogger(__name__)
 WINK_BASE_URL = "https://api.winktienda.com"
 
 
-def adjust_stock(sku: str, stock_variation: float, config: Settings) -> dict:
-    """Call Wink adjust-stock-by-sku endpoint.
+def adjust_stock(sku: str, quantity: float, config: Settings) -> dict:
+    """Call Wink adjust-stock-by-sku endpoint with the ``replace`` operation.
 
-    Maps a Holded ``stockVariation`` to the appropriate Wink operation:
-    - Positive variation  → ``add``
-    - Negative variation  → ``subtract``
+    The quantity is the absolute stock Holded reports (``calculatedStock`` or
+    ``calculatedVariantStock``), so Wink's existence is *set* to it instead of
+    shifted by a delta. Re-sending the same value is idempotent.
 
-    The quantity is always sent as a positive integer.
+    Rounded to the nearest unit and clamped at 0: Wink rejects negative values
+    and would then drop the whole request instead of just this SKU.
     """
-    quantity = abs(int(stock_variation))
-    if quantity < 1:
-        logger.info("Stock variation rounds to zero for sku=%s, skipping", sku)
-        return {"skipped": True, "reason": "zero_quantity"}
-
-    operation = "add" if stock_variation > 0 else "subtract"
+    stock = max(0, int(round(quantity)))
+    if stock != quantity:
+        logger.info("Rounded stock for sku=%s from %s to %d", sku, quantity, stock)
 
     body = WinkAdjustStockRequest(
-        items=[WinkAdjustItem(sku=sku, operation=operation, quantity=quantity)],
+        items=[WinkAdjustItem(sku=sku, operation="replace", quantity=stock)],
         inventory_ids=config.wink_inventory_id_list,
     )
 

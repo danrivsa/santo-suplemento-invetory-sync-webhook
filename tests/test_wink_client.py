@@ -34,7 +34,7 @@ def _mock_httpx(mocker, response_json=None, status_code=200, raise_for_status=No
     return mock_instance
 
 
-def test_add_stock(mocker, config):
+def test_replace_stock(mocker, config):
     instance = _mock_httpx(
         mocker,
         response_json={
@@ -43,39 +43,48 @@ def test_add_stock(mocker, config):
         },
     )
 
-    result = adjust_stock("ABC-123", 10.0, config)
+    result = adjust_stock("ABC-123", 105.0, config)
 
     assert result["summary"]["adjustmentsUpdated"] == 1
     instance.post.assert_called_once()
     assert "adjust-stock-by-sku" in instance.post.call_args[0][0]
 
 
-def test_subtract_stock(mocker, config):
+def test_sends_replace_operation_with_absolute_quantity(mocker, config):
     instance = _mock_httpx(mocker)
 
-    adjust_stock("ABC-123", -5.0, config)
+    adjust_stock("ABC-123", 105.0, config)
 
     body = json.loads(instance.post.call_args[1]["content"])
-    assert body["items"][0]["operation"] == "subtract"
-    assert body["items"][0]["quantity"] == 5
+    assert body["items"] == [{"sku": "ABC-123", "operation": "replace", "quantity": 105}]
+    assert body["inventory_ids"] == [12]
 
 
-def test_fractional_variation_rounds_down(mocker, config):
+def test_fractional_quantity_rounds_to_nearest(mocker, config):
     instance = _mock_httpx(mocker)
 
     adjust_stock("ABC-123", 3.7, config)
 
     body = json.loads(instance.post.call_args[1]["content"])
-    assert body["items"][0]["quantity"] == 3
-    assert body["items"][0]["operation"] == "add"
+    assert body["items"][0]["quantity"] == 4
 
 
-def test_zero_variation_skips(config, mocker):
-    _mock_httpx(mocker)
+def test_zero_stock_is_sent_as_agotado(mocker, config):
+    instance = _mock_httpx(mocker)
 
-    result = adjust_stock("ABC-123", 0.0, config)
+    adjust_stock("ABC-123", 0.0, config)
 
-    assert result["skipped"] is True
+    body = json.loads(instance.post.call_args[1]["content"])
+    assert body["items"][0] == {"sku": "ABC-123", "operation": "replace", "quantity": 0}
+
+
+def test_negative_stock_clamps_to_zero(mocker, config):
+    instance = _mock_httpx(mocker)
+
+    adjust_stock("ABC-123", -5.0, config)
+
+    body = json.loads(instance.post.call_args[1]["content"])
+    assert body["items"][0]["quantity"] == 0
 
 
 def test_http_error_raises(mocker, config):
