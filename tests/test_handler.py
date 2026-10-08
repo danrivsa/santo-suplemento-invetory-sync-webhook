@@ -50,11 +50,18 @@ VALID_PAYLOAD = {
     "hash": None,
 }
 
+AVAILABLE = 42.0
+
 
 def _patch_settings(monkeypatch):
     monkeypatch.setenv("HOLDED_WEBHOOK_SECRET", SECRET)
+    monkeypatch.setenv("HOLDED_API_KEY", "holded_test_key")
     monkeypatch.setenv("WINK_API_KEY", API_KEY)
     monkeypatch.setenv("WINK_INVENTORY_IDS", str(INVENTORY_ID))
+
+
+def _patch_availability(mocker, available: float = AVAILABLE):
+    return mocker.patch("src.handler.get_available_stock", return_value=available)
 
 
 def test_missing_signature_returns_401(monkeypatch):
@@ -81,8 +88,9 @@ def test_invalid_signature_returns_401(monkeypatch):
     assert "Invalid signature" in resp["body"]
 
 
-def test_stock_update_syncs_variant_stock(monkeypatch, mocker):
+def test_stock_update_syncs_available_from_holded(monkeypatch, mocker):
     _patch_settings(monkeypatch)
+    availability = _patch_availability(mocker, 42.0)
     stock = mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
 
     resp = lambda_handler(_make_event(VALID_PAYLOAD), None)
@@ -90,33 +98,37 @@ def test_stock_update_syncs_variant_stock(monkeypatch, mocker):
     assert resp["statusCode"] == 200
     body = json.loads(resp["body"])
     assert body["status"] == "ok"
-    stock.assert_called_once_with(sku="ABC-123", quantity=50, config=stock.call_args.kwargs["config"])
+    availability.assert_called_once_with(product_id="prod_001", config=availability.call_args.kwargs["config"])
+    stock.assert_called_once_with(sku="ABC-123", quantity=42.0, config=stock.call_args.kwargs["config"])
 
 
-def test_stock_update_without_variant_uses_calculated_stock(monkeypatch, mocker):
+def test_stock_update_ignores_payload_calculated_stock(monkeypatch, mocker):
+    """`available` is read from Holded's API, never taken from the payload."""
     _patch_settings(monkeypatch)
+    _patch_availability(mocker, 7.0)
     stock = mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
 
     payload = {**VALID_PAYLOAD, "variantId": ""}
-    resp = lambda_handler(_make_event(payload), None)
-
-    assert resp["statusCode"] == 200
-    stock.assert_called_once()
-    assert stock.call_args.kwargs["quantity"] == 105
-
-
-def test_stock_update_with_whitespace_variant_id_uses_calculated_stock(monkeypatch, mocker):
-    _patch_settings(monkeypatch)
-    stock = mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
-
-    payload = {**VALID_PAYLOAD, "variantId": "   "}
     lambda_handler(_make_event(payload), None)
 
-    assert stock.call_args.kwargs["quantity"] == 105
+    assert stock.call_args.kwargs["quantity"] == 7.0
+
+
+def test_variant_movement_uses_parent_available(monkeypatch, mocker):
+    """The availability endpoint reports `available` only at product level."""
+    _patch_settings(monkeypatch)
+    _patch_availability(mocker, 7.0)
+    stock = mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
+
+    payload = {**VALID_PAYLOAD, "variantId": "var_001"}
+    lambda_handler(_make_event(payload), None)
+
+    assert stock.call_args.kwargs["quantity"] == 7.0
 
 
 def test_zero_variation_is_still_synced(monkeypatch, mocker):
     _patch_settings(monkeypatch)
+    _patch_availability(mocker)
     stock = mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
 
     payload = {**VALID_PAYLOAD, "stockVariation": 0}
@@ -129,6 +141,7 @@ def test_zero_variation_is_still_synced(monkeypatch, mocker):
 
 def test_negative_variation_is_still_synced(monkeypatch, mocker):
     _patch_settings(monkeypatch)
+    _patch_availability(mocker)
     stock = mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
 
     payload = {**VALID_PAYLOAD, "stockVariation": -3}
@@ -140,6 +153,7 @@ def test_negative_variation_is_still_synced(monkeypatch, mocker):
 
 def test_sale_action_is_synced(monkeypatch, mocker):
     _patch_settings(monkeypatch)
+    _patch_availability(mocker)
     stock = mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
 
     payload = {**VALID_PAYLOAD, "action": "sales_receipt_stock_update", "stockVariation": -1}
@@ -152,6 +166,7 @@ def test_sale_action_is_synced(monkeypatch, mocker):
 
 def test_unknown_action_is_synced(monkeypatch, mocker):
     _patch_settings(monkeypatch)
+    _patch_availability(mocker)
     stock = mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
 
     payload = {**VALID_PAYLOAD, "action": "some_action_holded_added_later"}
@@ -164,6 +179,7 @@ def test_unknown_action_is_synced(monkeypatch, mocker):
 
 def test_null_action_is_synced(monkeypatch, mocker):
     _patch_settings(monkeypatch)
+    _patch_availability(mocker)
     stock = mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
 
     payload = {**VALID_PAYLOAD, "action": None}
@@ -176,6 +192,7 @@ def test_null_action_is_synced(monkeypatch, mocker):
 
 def test_empty_sku_returns_400(monkeypatch, mocker):
     _patch_settings(monkeypatch)
+    availability = _patch_availability(mocker)
     stock = mocker.patch("src.handler.adjust_stock")
     payload = {**VALID_PAYLOAD, "sku": ""}
 
@@ -183,11 +200,27 @@ def test_empty_sku_returns_400(monkeypatch, mocker):
 
     assert resp["statusCode"] == 400
     assert "Missing sku" in json.loads(resp["body"])["error"]
+    availability.assert_not_called()
+    stock.assert_not_called()
+
+
+def test_holded_error_returns_500(monkeypatch, mocker):
+    """A failed availability lookup makes Holded retry the delivery."""
+    _patch_settings(monkeypatch)
+    mocker.patch("src.handler.get_available_stock", side_effect=Exception("Holded API error"))
+    stock = mocker.patch("src.handler.adjust_stock")
+
+    resp = lambda_handler(_make_event(VALID_PAYLOAD), None)
+
+    assert resp["statusCode"] == 500
+    body = json.loads(resp["body"])
+    assert "Internal server error" in body["error"]
     stock.assert_not_called()
 
 
 def test_wink_client_error_returns_500(monkeypatch, mocker):
     _patch_settings(monkeypatch)
+    _patch_availability(mocker)
     mocker.patch("src.handler.adjust_stock", side_effect=Exception("Wink API error"))
 
     resp = lambda_handler(_make_event(VALID_PAYLOAD), None)
@@ -199,6 +232,7 @@ def test_wink_client_error_returns_500(monkeypatch, mocker):
 def test_wink_partial_failure_still_returns_200(monkeypatch, mocker):
     """Wink answers 200 with per-item failures; a retry would not fix them."""
     _patch_settings(monkeypatch)
+    _patch_availability(mocker)
     mocker.patch(
         "src.handler.adjust_stock",
         return_value={
@@ -216,6 +250,7 @@ def test_wink_partial_failure_still_returns_200(monkeypatch, mocker):
 def test_repeated_webhook_id_is_synced_again(monkeypatch, mocker):
     """replace is idempotent, so redeliveries need no dedupe."""
     _patch_settings(monkeypatch)
+    _patch_availability(mocker)
     stock = mocker.patch("src.handler.adjust_stock", return_value={"summary": {"adjustmentsUpdated": 1}, "results": []})
 
     lambda_handler(_make_event(VALID_PAYLOAD), None)
@@ -226,6 +261,7 @@ def test_repeated_webhook_id_is_synced_again(monkeypatch, mocker):
 
 def test_base64_encoded_body(monkeypatch, mocker):
     _patch_settings(monkeypatch)
+    _patch_availability(mocker)
     mocker.patch("src.handler.adjust_stock", return_value={"summary": {}, "results": []})
 
     body = json.dumps(VALID_PAYLOAD).encode()

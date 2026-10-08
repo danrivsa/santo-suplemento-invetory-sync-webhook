@@ -13,6 +13,7 @@ from src.wink_client import adjust_price, adjust_stock
 def config() -> Settings:
     return Settings(
         holded_webhook_secret="whsec_test",
+        holded_api_key="holded_key_test",
         wink_api_key="wink_key_test",
         wink_inventory_ids="12",
     )

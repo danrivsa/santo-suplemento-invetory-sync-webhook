@@ -15,9 +15,9 @@ WINK_BASE_URL = "https://api.winktienda.com"
 def adjust_stock(sku: str, quantity: float, config: Settings) -> dict:
     """Call Wink adjust-stock-by-sku endpoint with the ``replace`` operation.
 
-    The quantity is the absolute stock Holded reports (``calculatedStock`` or
-    ``calculatedVariantStock``), so Wink's existence is *set* to it instead of
-    shifted by a delta. Re-sending the same value is idempotent.
+    The quantity is the absolute stock Holded reports (its ``available``
+    availability), so Wink's existence is *set* to it instead of shifted by a
+    delta. Re-sending the same value is idempotent.
 
     Rounded to the nearest unit and clamped at 0: Wink rejects negative values
     and would then drop the whole request instead of just this SKU.

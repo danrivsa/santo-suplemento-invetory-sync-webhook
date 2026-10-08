@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     holded_webhook_secret: str
+    holded_api_key: str = Field(description="Holded API key used as Bearer token")
     wink_api_key: str
     wink_inventory_ids: str = Field(description="Comma-separated Wink inventory IDs")
 

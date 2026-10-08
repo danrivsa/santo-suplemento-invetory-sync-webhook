@@ -5,6 +5,7 @@ import json
 import logging
 
 from src.config import Settings, get_settings
+from src.holded_client import get_available_stock
 from src.models import HoldedProductPayload, HoldedStockPayload
 from src.signature import verify_signature
 from src.wink_client import adjust_price, adjust_stock
@@ -59,25 +60,22 @@ def _extract_price_targets(payload: HoldedProductPayload) -> list[tuple[str, flo
     return targets
 
 
-def _stock_target(payload: HoldedStockPayload) -> float:
-    """Absolute stock to push to Wink for this stock.update.
-
-    Wink tracks existence per variant when a product has variants, and rejects
-    the parent SKU with ``product_has_variants``, so a variant movement must
-    sync the variant's own stock. Everything else syncs the product's stock.
-    """
-    if payload.variant_id.strip():
-        return payload.calculated_variant_stock
-    return payload.calculated_stock
-
-
 def _handle_stock_update(raw_body: bytes, config: Settings) -> tuple[int, dict]:
     payload = HoldedStockPayload.model_validate_json(raw_body)
-    target = _stock_target(payload)
+
+    if not payload.sku:
+        logger.warning("Empty sku in payload, skipping")
+        return 400, {"error": "Missing sku"}
+
+    # Holded reports ``available`` (total minus reserved), not the payload's
+    # calculated stock, so the availability is read back from the API. Failures
+    # propagate and Holded retries the delivery.
+    target = get_available_stock(product_id=payload.product_id, config=config)
     logger.info(
-        "Received stock.update for sku=%s target=%.2f variation=%.2f action=%r warehouse=%s "
+        "Received stock.update for sku=%s product_id=%s target=%.2f variation=%.2f action=%r warehouse=%s "
         "provider_origin=%r id_origin=%r description=%r",
         payload.sku,
+        payload.product_id,
         target,
         payload.stock_variation,
         payload.action,
@@ -86,10 +84,6 @@ def _handle_stock_update(raw_body: bytes, config: Settings) -> tuple[int, dict]:
         payload.id_origin_change,
         payload.description,
     )
-
-    if not payload.sku:
-        logger.warning("Empty sku in payload, skipping")
-        return 400, {"error": "Missing sku"}
 
     result = adjust_stock(
         sku=payload.sku,

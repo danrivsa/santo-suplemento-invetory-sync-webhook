@@ -24,6 +24,16 @@ class HoldedStockPayload(BaseModel):
     hash: str | None = None
 
 
+class HoldedStockAvailability(BaseModel):
+    product_id: str = ""
+    has_stock: bool = False
+    total: str = "0"
+    available: str
+    reserved: str = "0"
+    in_transit: str = "0"
+    warehouses: list[dict] = Field(default_factory=list)
+
+
 class WinkAdjustItem(BaseModel):
     sku: str
     operation: str
