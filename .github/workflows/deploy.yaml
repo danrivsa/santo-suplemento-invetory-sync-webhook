@@ -218,4 +218,4 @@ jobs:
 
           URL=$(aws lambda get-function-url-config --function-name "$FUNCTION_NAME" --query FunctionUrl --output text)
           echo "::notice::Deployed. Function URL: $URL"
-          echo "::notice::Register this URL as the Holded webhook target for stock.update and product.update."
+          echo "::notice::Register this URL as the Holded webhook target for stock.update, product.update, salesorder.create and salesorder.update."
