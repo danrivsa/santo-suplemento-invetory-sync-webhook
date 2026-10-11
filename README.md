@@ -16,7 +16,7 @@ flowchart LR
 
     subgraph Lambda["AWS Lambda (holded-stock-webhook)"]
         direction TB
-        Handler["<b>handler.py</b><br/>lambda_handler()<br/>─────────<br/>_extract_body()<br/>_extract_header()<br/>_extract_price_targets()<br/>_handle_stock_update()<br/>_handle_product_update()<br/>_handle_sale_order()<br/>_response()"]
+        Handler["<b>handler.py</b><br/>lambda_handler()<br/>─────────<br/>_extract_body()<br/>_extract_header()<br/>_extract_price_targets()<br/>_handle_stock_update()<br/>_handle_product_update()<br/>_handle_sale_order()<br/>_log_wink_rejections()<br/>_response()"]
 
         Sig["<b>signature.py</b><br/>verify_signature()"]
         Models["<b>models.py</b><br/>HoldedStockPayload<br/>HoldedStockAvailability<br/>HoldedProductPayload<br/>HoldedProductVariant<br/>HoldedSaleOrderPayload<br/>HoldedSaleOrderLine<br/>WinkAdjustItem / StockRequest<br/>WinkSyncPriceRequest"]
@@ -185,7 +185,7 @@ src/
 ├── wink_client.py    # httpx clients: adjust_stock() and adjust_price()
 └── handler.py        # AWS Lambda entry point + event routing
 tests/
-├── test_handler.py       # routing, auth, stock + price paths, error handling
+├── test_handler.py       # routing, auth, stock + price + sale order paths, error handling
 ├── test_holded_client.py # availability endpoint and error propagation
 ├── test_signature.py     # HMAC verification
 └── test_wink_client.py   # replace mapping and price sync
@@ -290,6 +290,10 @@ This runs `main.py` which builds a sample event and calls `lambda_handler`. Make
 5. `product.update` → pushes `price` per SKU via `update-price-by-sku`.
 6. `salesorder.create` / `salesorder.update` → iterates the order's `lines` and, for each line that names a product, reads that product's `available` stock from the Holded API and **sets** the line's SKU in Wink to that value via `replace`.
 7. Any other event is acknowledged with `200 {"status": "ignored"}` so Holded does not retry it.
+
+### Observability
+
+Every invocation logs the full event received from Holded (headers and body) via `logger.info` at the top of `lambda_handler`, so the raw payload is available in CloudWatch Logs — including unsupported events and lines that were skipped.
 
 ### Stock sync rules
 
