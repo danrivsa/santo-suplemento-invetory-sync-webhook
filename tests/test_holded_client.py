@@ -53,6 +53,16 @@ def test_calls_products_stock_endpoint(mocker, config):
     assert headers["Accept"] == "application/json"
 
 
+def test_strips_sale_order_line_suffix(mocker, config):
+    instance = _mock_httpx(mocker)
+
+    get_available_stock("507f1f77bcf86cd799439011#807f1f77bcf86cd799439022", config)
+
+    url = instance.get.call_args[0][0]
+    assert url.endswith("/products/507f1f77bcf86cd799439011/stock")
+    assert "#" not in url
+
+
 def test_zero_available_is_returned(mocker, config):
     _mock_httpx(mocker, response_json={"product_id": "prod_001", "available": "0"})
 

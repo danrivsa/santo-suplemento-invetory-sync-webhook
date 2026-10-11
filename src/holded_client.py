@@ -19,7 +19,14 @@ def get_available_stock(product_id: str, config: Settings) -> float:
     stock reserved by pending sales orders) as a decimal string, which is the
     value pushed to Wink. Any failure propagates so the webhook answers 500 and
     Holded retries the delivery.
+
+    Sale order lines carry the product as ``productId#lineId``; Holded's stock
+    endpoint only accepts the bare product ObjectId, and a ``#`` in a URL is
+    parsed as a fragment (silently dropped by the client, yielding the product
+    document instead of its availability), so only the leading id is used.
     """
+    product_id = product_id.split("#", 1)[0]
+
     with httpx.Client(timeout=10) as client:
         response = client.get(
             f"{HOLDED_BASE_URL}/products/{product_id}/stock",
