@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "f61dd2c8-13b8-4b7b-b7f0-cf7cb30fa04c",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/home/danrivsa/projects/santo-suplemento/holded-stock-webhook/.archify/architecture-module-dependencies-20261011-162332/candidate.json",
+  "output": "/home/danrivsa/projects/santo-suplemento/holded-stock-webhook/.documentation/diagrams/module-dependencies.html",
+  "specification": {
+    "sha256": "94f45101c0acc82645e3591e65e7799f7f54725b655f089cd39f5c3e93aa6273",
+    "bytes": 4943
+  },
+  "artifact": {
+    "sha256": "2d3a1bfbf2a4683c66bea4225645c4d6b1335da12e92ffc96fc1955c42376a97",
+    "bytes": 770062
+  }
+}

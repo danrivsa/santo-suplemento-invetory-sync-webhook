@@ -174,6 +174,9 @@ graph TD
     style Client fill:#8957e5,color:#fff
     style Config fill:#8957e5,color:#fff
 ```
+
+Interactive versions of these diagrams (event flow, stock-sync sequence, and module dependencies) live in [`.documentation/diagrams/`](.documentation/diagrams/), indexed in [`.documentation/README.md`](.documentation/README.md).
+
 ## Project Structure
 
 ```

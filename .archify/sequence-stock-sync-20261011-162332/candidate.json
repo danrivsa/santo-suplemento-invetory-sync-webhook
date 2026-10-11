@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Stock Sync Request Lifecycle",
+    "output": ".documentation/diagrams/stock-sync-sequence.html",
+    "viewBox": [1080, 640],
+    "column_fit": "spread",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "git@github.com:danrivsa/santo-suplemento-invetory-sync-webhook.git",
+      "revision": "c84e5b4f081a92574e58de3b46c3778a8a5ad759",
+      "link_mode": "local-only"
+    }
+  },
+  "participants": [
+    { "id": "holded", "type": "external", "label": "Holded", "sublabel": "webhook sender", "sources": [{ "path": "src/handler.py", "line": 210 }] },
+    { "id": "lambda", "type": "backend", "label": "lambda_handler", "sublabel": "handler.py", "sources": [{ "path": "src/handler.py", "line": 210, "end_line": 242 }] },
+    { "id": "sig", "type": "security", "label": "Signature", "sublabel": "signature.py", "sources": [{ "path": "src/signature.py", "line": 7, "end_line": 21 }] },
+    { "id": "models", "type": "backend", "label": "Models", "sublabel": "models.py", "sources": [{ "path": "src/models.py", "line": 6, "end_line": 24 }] },
+    { "id": "hclient", "type": "backend", "label": "holded_client", "sublabel": "get_available_stock", "sources": [{ "path": "src/holded_client.py", "line": 15, "end_line": 43 }] },
+    { "id": "happi", "type": "cloud", "label": "Holded API", "sublabel": "/api/v2", "sources": [{ "path": "src/holded_client.py", "line": 24, "end_line": 30 }] },
+    { "id": "wclient", "type": "backend", "label": "wink_client", "sublabel": "adjust_stock", "sources": [{ "path": "src/wink_client.py", "line": 15, "end_line": 47 }] },
+    { "id": "wapi", "type": "cloud", "label": "Wink API", "sublabel": "winktienda.com", "sources": [{ "path": "src/wink_client.py", "line": 35, "end_line": 42 }] }
+  ],
+  "segments": [
+    { "from": 155, "to": 235, "label": "Authenticate" },
+    { "from": 240, "to": 365, "label": "Read availability" },
+    { "from": 370, "to": 505, "label": "Apply to Wink" }
+  ],
+  "messages": [
+    { "id": "receive", "from": "holded", "to": "lambda", "y": 165, "label": "POST webhook (body + event + signature headers)", "variant": "emphasis" },
+    { "id": "verify", "from": "lambda", "to": "sig", "y": 195, "label": "verify_signature(raw_body, signature, secret)", "variant": "security" },
+    { "id": "verify-ok", "from": "sig", "to": "lambda", "y": 223, "label": "valid", "variant": "return" },
+    { "id": "validate", "from": "lambda", "to": "models", "y": 251, "label": "HoldedStockPayload.model_validate_json", "variant": "default" },
+    { "id": "read-call", "from": "lambda", "to": "hclient", "y": 279, "label": "get_available_stock(product_id)", "variant": "default" },
+    { "id": "read-http", "from": "hclient", "to": "happi", "y": 307, "label": "GET /products/{id}/stock (Bearer)", "variant": "default" },
+    { "id": "read-reply", "from": "happi", "to": "hclient", "y": 335, "label": "200 with available", "variant": "return" },
+    { "id": "read-back", "from": "hclient", "to": "lambda", "y": 363, "label": "available as float", "variant": "return" },
+    { "id": "set-call", "from": "lambda", "to": "wclient", "y": 391, "label": "adjust_stock(sku, available)", "variant": "emphasis" },
+    { "id": "set-http", "from": "wclient", "to": "wapi", "y": 419, "label": "POST adjust-stock-by-sku (replace)", "variant": "default" },
+    { "id": "set-reply", "from": "wapi", "to": "wclient", "y": 447, "label": "200 with summary + results", "variant": "return" },
+    { "id": "set-back", "from": "wclient", "to": "lambda", "y": 475, "label": "result dict", "variant": "return" },
+    { "id": "reply", "from": "lambda", "to": "holded", "y": 503, "label": "200 {status: ok}", "variant": "return" }
+  ],
+  "activations": [
+    { "participant": "lambda", "from": 165, "to": 507, "type": "backend" },
+    { "participant": "sig", "from": 190, "to": 228, "type": "security" },
+    { "participant": "models", "from": 246, "to": 256, "type": "backend" },
+    { "participant": "hclient", "from": 274, "to": 368, "type": "backend" },
+    { "participant": "happi", "from": 302, "to": 340, "type": "cloud" },
+    { "participant": "wclient", "from": 386, "to": 480, "type": "backend" },
+    { "participant": "wapi", "from": 414, "to": 452, "type": "cloud" }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Authentication",
+      "items": [
+        "The HMAC-SHA256 signature is checked before any routing or upstream call",
+        "A missing or tampered signature answers 401 and stops the request"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Absolute Sync",
+      "items": [
+        "The target is Holded's available stock, read back from the Holded API",
+        "Wink receives it with the replace operation, so retries are idempotent"
+      ]
+    }
+  ]
+}

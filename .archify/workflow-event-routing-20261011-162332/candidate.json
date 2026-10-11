@@ -1,0 +1,77 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Webhook Event Flow",
+    "output": ".documentation/diagrams/event-flow.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "git@github.com:danrivsa/santo-suplemento-invetory-sync-webhook.git",
+      "revision": "c84e5b4f081a92574e58de3b46c3778a8a5ad759",
+      "link_mode": "local-only"
+    }
+  },
+  "lanes": [
+    { "id": "holded", "label": "Holded" },
+    { "id": "lambda", "label": "Lambda handler" },
+    { "id": "apis", "label": "Upstream APIs" },
+    { "id": "price", "label": "Branch outcomes", "variant": "exception" }
+  ],
+  "phases": [
+    { "id": "intake", "label": "Intake + auth", "fromCol": 0, "toCol": 1 },
+    { "id": "route", "label": "Route", "fromCol": 2, "toCol": 2, "variant": "emphasis" },
+    { "id": "sync", "label": "Sync", "fromCol": 3, "toCol": 4, "variant": "dashed" },
+    { "id": "reply", "label": "Reply", "fromCol": 5, "toCol": 5 }
+  ],
+  "mainPath": ["webhook", "verify", "route", "sync_stock", "read_stock", "set_wink", "reply"],
+  "nodes": [
+    { "id": "webhook", "lane": "holded", "col": 0, "type": "external", "label": "Webhook POST", "sublabel": "x-holded-webhook-event", "width": 180, "sources": [{ "path": "src/handler.py", "line": 226, "end_line": 236 }] },
+    { "id": "verify", "lane": "lambda", "col": 1, "type": "security", "label": "Verify signature", "sublabel": "HMAC-SHA256", "tag": "before routing", "width": 132, "sources": [{ "path": "src/handler.py", "line": 217, "end_line": 224 }] },
+    { "id": "unauth", "lane": "price", "col": 1, "type": "security", "label": "401 Unauthorized", "sublabel": "missing / invalid signature", "width": 150, "sources": [{ "path": "src/handler.py", "line": 218, "end_line": 224 }] },
+    { "id": "route", "lane": "lambda", "col": 2, "type": "backend", "label": "Route event", "width": 120, "sources": [{ "path": "src/handler.py", "line": 228, "end_line": 236 }] },
+    { "id": "sync_stock", "lane": "lambda", "col": 3, "type": "backend", "label": "Stock sync", "sublabel": "availability → replace", "width": 150, "sources": [{ "path": "src/handler.py", "line": 67, "end_line": 99 }] },
+    { "id": "sync_price", "lane": "price", "col": 2, "type": "backend", "label": "Price sync", "sublabel": "variants first", "width": 132, "sources": [{ "path": "src/handler.py", "line": 114, "end_line": 145 }] },
+    { "id": "read_stock", "lane": "apis", "col": 3, "type": "cloud", "label": "Holded availability", "sublabel": "GET products/{id}/stock", "width": 150, "sources": [{ "path": "src/holded_client.py", "line": 15, "end_line": 43 }] },
+    { "id": "set_wink", "lane": "apis", "col": 4, "type": "cloud", "label": "Wink API by SKU", "sublabel": "adjust stock · update price", "width": 175, "sources": [{ "path": "src/wink_client.py", "line": 15, "end_line": 76 }] },
+    { "id": "set_price", "lane": "price", "col": 4, "type": "cloud", "label": "Wink price by SKU", "sublabel": "update-price-by-sku", "width": 160, "sources": [{ "path": "src/wink_client.py", "line": 48, "end_line": 76 }] },
+    { "id": "reply", "lane": "lambda", "col": 5, "type": "backend", "label": "JSON response", "sublabel": "200 · 400 · 500", "width": 160, "sources": [{ "path": "src/handler.py", "line": 238, "end_line": 242 }] }
+  ],
+  "edges": [
+    { "id": "receive", "from": "webhook", "to": "verify", "variant": "emphasis" },
+    { "id": "sig-valid", "from": "verify", "to": "route", "label": "valid", "variant": "emphasis" },
+    { "id": "sig-invalid", "from": "verify", "to": "unauth", "label": "invalid", "variant": "security", "role": "error" },
+    { "id": "route-stock", "from": "route", "to": "sync_stock", "label": "stock.update · salesorder.*", "variant": "emphasis" },
+    { "id": "route-price", "from": "route", "to": "sync_price", "label": "product.update" },
+    { "id": "read-call", "from": "sync_stock", "to": "read_stock", "label": "read available" },
+    { "id": "read-target", "from": "read_stock", "to": "set_wink", "label": "available", "variant": "emphasis" },
+    { "id": "price-call", "from": "sync_price", "to": "set_price", "label": "price" },
+    { "id": "wink-done", "from": "set_wink", "to": "reply" },
+    { "id": "price-done", "from": "set_price", "to": "reply" }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Authentication First",
+      "items": [
+        "The HMAC-SHA256 signature is verified before any event is routed",
+        "A missing or invalid signature answers 401 and stops the request"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Absolute Sync",
+      "items": [
+        "stock.update and salesorder.* read Holded's available stock and set it in Wink",
+        "product.update pushes the absolute price per SKU"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Retries",
+      "items": [
+        "A failed availability lookup or Wink call answers 500 so Holded retries",
+        "replace makes a redelivery idempotent"
+      ]
+    }
+  ]
+}

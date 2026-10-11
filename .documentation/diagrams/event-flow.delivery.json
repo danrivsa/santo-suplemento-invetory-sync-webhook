@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "31fdbd83-b4c8-480c-bb25-10c552203e6b",
+  "status": "current",
+  "command": "deliver",
+  "type": "workflow",
+  "input": "/home/danrivsa/projects/santo-suplemento/holded-stock-webhook/.archify/workflow-event-routing-20261011-162332/candidate.json",
+  "output": "/home/danrivsa/projects/santo-suplemento/holded-stock-webhook/.documentation/diagrams/event-flow.html",
+  "specification": {
+    "sha256": "dc038ad9b0afbc461513131f788cd10c8ca064cd408dc206b86cfcb378f11127",
+    "bytes": 4997
+  },
+  "artifact": {
+    "sha256": "20ebaefed219e90fe4a3744cc1a34943aead48d395dfb1a8999f90090c12144e",
+    "bytes": 762390
+  }
+}

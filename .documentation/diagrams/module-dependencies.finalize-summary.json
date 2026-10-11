@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "/home/danrivsa/projects/santo-suplemento/holded-stock-webhook/.archify/architecture-module-dependencies-20261011-162332/candidate.json",
+    "sha256": "94f45101c0acc82645e3591e65e7799f7f54725b655f089cd39f5c3e93aa6273",
+    "bytes": 4943
+  },
+  "artifact": {
+    "path": "/home/danrivsa/projects/santo-suplemento/holded-stock-webhook/.documentation/diagrams/module-dependencies.html",
+    "sha256": "2d3a1bfbf2a4683c66bea4225645c4d6b1335da12e92ffc96fc1955c42376a97",
+    "bytes": 770062
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "/home/danrivsa/projects/santo-suplemento/holded-stock-webhook/.documentation/diagrams/module-dependencies.finalize.json",
+    "summaryReceipt": "/home/danrivsa/projects/santo-suplemento/holded-stock-webhook/.documentation/diagrams/module-dependencies.finalize-summary.json",
+    "browserCheckReceipt": "/home/danrivsa/projects/santo-suplemento/holded-stock-webhook/.documentation/diagrams/module-dependencies.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.0.1",
+    "availableVersion": "3.0.1",
+    "releaseNotes": null,
+    "checkedAt": "2026-10-11T20:24:22.581Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 5060,
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "resolvedCrossovers": 3,
+      "routesOverSuggestedBends": 1
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [
+        {
+          "left": {
+            "id": "handler-to-signature",
+            "from": "handler",
+            "to": "signature",
+            "label": "raw body + secret",
+            "collectionIndex": 3,
+            "artifactIndex": 4
+          },
+          "right": {
+            "id": "handler-to-models",
+            "from": "handler",
+            "to": "models",
+            "label": "validate JSON",
+            "collectionIndex": 4,
+            "artifactIndex": 5
+          },
+          "point": [
+            636,
+            272
+          ],
+          "sharedNode": "handler"
+        },
+        {
+          "left": {
+            "id": "handler-to-wink-client",
+            "from": "handler",
+            "to": "wink_client",
+            "label": "sku · quantity",
+            "collectionIndex": 6,
+            "artifactIndex": 7
+          },
+          "right": {
+            "id": "holded-client-to-config",
+            "from": "holded_client",
+            "to": "config",
+            "label": "api key",
+            "collectionIndex": 9,
+            "artifactIndex": 10
+          },
+          "point": [
+            555.1999999999999,
+            439
+          ]
+        },
+        {
+          "left": {
+            "id": "wink-client-to-models",
+            "from": "wink_client",
+            "to": "models",
+            "label": "builds request",
+            "collectionIndex": 10,
+            "artifactIndex": 11
+          },
+          "right": {
+            "id": "holded-client-to-api",
+            "from": "holded_client",
+            "to": "holded_api",
+            "label": "GET Bearer",
+            "collectionIndex": 12,
+            "artifactIndex": 13
+          },
+          "point": [
+            864,
+            432
+          ]
+        }
+      ],
+      "detours": [
+        {
+          "relationship": {
+            "id": "handler-to-wink-client",
+            "from": "handler",
+            "to": "wink_client",
+            "label": "sku · quantity",
+            "collectionIndex": 6,
+            "artifactIndex": 7
+          },
+          "bends": 4,
+          "stretch": 1
+        }
+      ],
+      "truncated": false
+    },
+    "hints": [
+      "handler has 4 relationships facing its right side, which fits 3 ports: make that side at least 74px, or move some of those neighbours so they face another side of handler.",
+      "handler → signature and handler → models cross next to handler: move node signature or models so the two reach handler from different sides (for example one level with it, one directly above or below it).",
+      "handler → wink_client crosses holded_client → config: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "wink_client → models crosses holded_client → holded_api: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "handler → wink_client needs 4 bends: move node handler or wink_client so they share a row or column with matching centers, or sit diagonally with a clear corner."
+    ],
+    "repair": "Trace these relationships at the desktop viewport. For Architecture, use references/architecture-layout-repair.md: reflow a blocked main path or tangled connected scene, and repair an isolated defect locally only when the surrounding composition is accepted. Preserve all semantic content and user-fixed geometry. Rerun finalize once after the edit."
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Module Dependencies",
+    "output": ".documentation/diagrams/module-dependencies.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "git@github.com:danrivsa/santo-suplemento-invetory-sync-webhook.git",
+      "revision": "c84e5b4f081a92574e58de3b46c3778a8a5ad759",
+      "link_mode": "local-only"
+    }
+  },
+  "components": [
+    { "id": "main", "type": "external", "label": "main.py", "sublabel": "local test harness", "pos": [40, 120], "size": [150, 64], "sources": [{ "path": "main.py", "line": 100, "end_line": 116 }] },
+    { "id": "tests", "type": "external", "label": "tests/", "sublabel": "pytest suite", "pos": [40, 620], "size": [150, 64], "sources": [{ "path": "tests/test_handler.py", "line": 1, "end_line": 8 }] },
+    { "id": "holded", "type": "external", "label": "Holded", "sublabel": "webhook sender", "pos": [40, 320], "size": [150, 64], "sources": [{ "path": "src/handler.py", "line": 217, "end_line": 226 }] },
+    { "id": "handler", "type": "backend", "label": "handler.py", "sublabel": "lambda_handler + routing", "pos": [300, 300], "size": [190, 72], "sources": [{ "path": "src/handler.py", "line": 210, "end_line": 242 }] },
+    { "id": "signature", "type": "security", "label": "signature.py", "sublabel": "verify_signature", "pos": [660, 80], "size": [180, 64], "sources": [{ "path": "src/signature.py", "line": 7, "end_line": 21 }] },
+    { "id": "models", "type": "backend", "label": "models.py", "sublabel": "Pydantic payloads", "pos": [660, 240], "size": [180, 64], "sources": [{ "path": "src/models.py", "line": 6, "end_line": 98 }] },
+    { "id": "holded_client", "type": "backend", "label": "holded_client.py", "sublabel": "get_available_stock", "pos": [660, 400], "size": [180, 64], "sources": [{ "path": "src/holded_client.py", "line": 15, "end_line": 43 }] },
+    { "id": "wink_client", "type": "backend", "label": "wink_client.py", "sublabel": "adjust_stock · adjust_price", "pos": [660, 560], "size": [180, 64], "sources": [{ "path": "src/wink_client.py", "line": 15, "end_line": 77 }] },
+    { "id": "config", "type": "backend", "label": "config.py", "sublabel": "Settings", "pos": [300, 560], "size": [180, 64], "sources": [{ "path": "src/config.py", "line": 7, "end_line": 21 }] },
+    { "id": "holded_api", "type": "external", "label": "Holded API", "sublabel": "products/{id}/stock", "pos": [980, 400], "size": [170, 64], "sources": [{ "path": "src/holded_client.py", "line": 24, "end_line": 34 }] },
+    { "id": "wink", "type": "external", "label": "Wink API", "sublabel": "adjust-stock · update-price", "pos": [980, 560], "size": [170, 64], "sources": [{ "path": "src/wink_client.py", "line": 34, "end_line": 47 }] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "AWS Lambda (holded-stock-webhook)", "wraps": ["handler", "signature", "models", "holded_client", "wink_client", "config"] }
+  ],
+  "connections": [
+    { "id": "holded-to-handler", "from": "holded", "to": "handler", "label": "POST webhook (HMAC)", "variant": "emphasis" },
+    { "id": "main-to-handler", "from": "main", "to": "handler", "label": "invoke" },
+    { "id": "tests-to-handler", "from": "tests", "to": "handler", "variant": "dashed" },
+    { "id": "handler-to-signature", "from": "handler", "to": "signature", "label": "raw body + secret", "variant": "security" },
+    { "id": "handler-to-models", "from": "handler", "to": "models", "label": "validate JSON" },
+    { "id": "handler-to-holded-client", "from": "handler", "to": "holded_client", "label": "product_id" },
+    { "id": "handler-to-wink-client", "from": "handler", "to": "wink_client", "label": "sku · quantity" },
+    { "id": "handler-to-config", "from": "handler", "to": "config", "label": "env vars" },
+    { "id": "holded-client-to-models", "from": "holded_client", "to": "models", "label": "builds response" },
+    { "id": "holded-client-to-config", "from": "holded_client", "to": "config", "label": "api key" },
+    { "id": "wink-client-to-models", "from": "wink_client", "to": "models", "label": "builds request" },
+    { "id": "wink-client-to-config", "from": "wink_client", "to": "config", "label": "api key + inventory ids" },
+    { "id": "holded-client-to-api", "from": "holded_client", "to": "holded_api", "label": "GET Bearer" },
+    { "id": "wink-client-to-api", "from": "wink_client", "to": "wink", "label": "POST x-api-key" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Entry Points",
+      "items": [
+        "handler.py is the Lambda entry point (src.handler.lambda_handler)",
+        "main.py builds signed sample events; tests/ drives pytest"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Shared Modules",
+      "items": [
+        "models.py holds every Pydantic payload for both APIs",
+        "config.py reads the four environment variables through pydantic-settings"
+      ]
+    }
+  ]
+}
