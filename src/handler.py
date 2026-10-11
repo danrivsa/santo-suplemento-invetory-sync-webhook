@@ -6,7 +6,7 @@ import logging
 
 from src.config import Settings, get_settings
 from src.holded_client import get_available_stock
-from src.models import HoldedProductPayload, HoldedStockPayload
+from src.models import HoldedProductPayload, HoldedSaleOrderPayload, HoldedStockPayload
 from src.signature import verify_signature
 from src.wink_client import adjust_price, adjust_stock
 
@@ -15,6 +15,10 @@ logger.setLevel(logging.INFO)
 
 EVENT_STOCK_UPDATE = "stock.update"
 EVENT_PRODUCT_UPDATE = "product.update"
+EVENT_SALE_ORDER_CREATE = "salesorder.create"
+EVENT_SALE_ORDER_UPDATE = "salesorder.update"
+
+SALE_ORDER_EVENTS = {EVENT_SALE_ORDER_CREATE, EVENT_SALE_ORDER_UPDATE}
 
 
 def _extract_body(event: dict) -> bytes:
@@ -141,9 +145,72 @@ def _handle_product_update(raw_body: bytes, config: Settings) -> tuple[int, dict
     return 200, {"status": "ok", "synced": len(targets), "results": results}
 
 
+def _handle_sale_order(raw_body: bytes, config: Settings) -> tuple[int, dict]:
+    """Sync Wink stock after a sales order is created or updated.
+
+    A sale order consumes (reserves) stock without firing a ``stock.update``,
+    so the availability is read back from the Holded API per product line. Each
+    line carries the ``productId`` used for the availability lookup and a
+    ``sku`` to push the resulting ``available`` value to Wink with ``replace``,
+    the same absolute-sync rules as ``_handle_stock_update``.
+
+    Lines without a product or without a SKU (free-text lines) are skipped;
+    failures propagate per line and a failed delivery returns 500 so Holded
+    retries it — ``replace`` makes a retry idempotent.
+    """
+    payload = HoldedSaleOrderPayload.model_validate_json(raw_body)
+
+    if not payload.lines:
+        logger.warning("No lines in sale order id=%s, skipping", payload.id)
+        return 200, {"status": "skipped", "reason": "no_lines"}
+
+    logger.info(
+        "Received sale order event for id=%s doc=%s with %d line(s)",
+        payload.id,
+        payload.document_number,
+        len(payload.lines),
+    )
+
+    results: list[dict] = []
+    failed = 0
+    for line in payload.lines:
+        if not line.product_id:
+            logger.warning("Sale order line without productId, skipping")
+            continue
+        if not line.sku:
+            logger.warning("Sale order line without sku, skipping (product_id=%s)", line.product_id)
+            continue
+
+        try:
+            target = get_available_stock(product_id=line.product_id, config=config)
+            result = adjust_stock(sku=line.sku, quantity=target, config=config)
+        except Exception:
+            logger.exception(
+                "Failed to sync availability for sale order line sku=%s product_id=%s",
+                line.sku,
+                line.product_id,
+            )
+            failed += 1
+            results.append({"sku": line.sku, "status": "error"})
+        else:
+            _log_wink_rejections(line.sku, result)
+            results.append({"sku": line.sku, "status": "ok"})
+
+    if failed:
+        return 500, {
+            "status": "error",
+            "synced": len(results) - failed,
+            "failed": failed,
+            "results": results,
+        }
+
+    return 200, {"status": "ok", "synced": len(results), "results": results}
+
+
 def lambda_handler(event: dict, context: object) -> dict:  # noqa: ARG001
     try:
         config = get_settings()
+        logger.info("Received webhook event: %s", event)
 
         raw_body = _extract_body(event)
 
@@ -162,6 +229,8 @@ def lambda_handler(event: dict, context: object) -> dict:  # noqa: ARG001
             status_code, body = _handle_stock_update(raw_body, config)
         elif event_type == EVENT_PRODUCT_UPDATE:
             status_code, body = _handle_product_update(raw_body, config)
+        elif event_type in SALE_ORDER_EVENTS:
+            status_code, body = _handle_sale_order(raw_body, config)
         else:
             logger.info("Ignoring unsupported webhook event: %s", event_type or "<missing>")
             status_code, body = 200, {"status": "ignored", "event": event_type}

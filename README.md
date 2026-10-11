@@ -2,24 +2,24 @@
 
 AWS Lambda that syncs stock changes from [Holded](https://www.holded.com/) to [Wink](https://www.winktienda.com/) via their APIs.
 
-When a product's stock is updated in Holded, a `stock.update` webhook fires and this Lambda sets the stock on Wink to Holded's `available` stock (read back from the Holded API), via the `adjust-stock-by-sku` endpoint.
+When a product's stock is updated in Holded, a `stock.update` webhook fires and this Lambda sets the stock on Wink to Holded's `available` stock (read back from the Holded API), via the `adjust-stock-by-sku` endpoint. Sales orders (`salesorder.create` / `salesorder.update`) are listened to as well, so the stock reserved by a sale keeps Wink in sync even when no `stock.update` event fires.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     subgraph External["External services"]
-        Holded["Holded webhooks<br/><i>stock.update · product.update</i>"]
+        Holded["Holded webhooks<br/><i>stock.update · product.update<br/>salesorder.create · salesorder.update</i>"]
         HoldedApi["Holded API<br/><i>GET products/{id}/stock</i>"]
         Wink["Wink API<br/><i>adjust-stock-by-sku<br/>update-price-by-sku</i>"]
     end
 
     subgraph Lambda["AWS Lambda (holded-stock-webhook)"]
         direction TB
-        Handler["<b>handler.py</b><br/>lambda_handler()<br/>─────────<br/>_extract_body()<br/>_extract_header()<br/>_extract_price_targets()<br/>_handle_stock_update()<br/>_handle_product_update()<br/>_response()"]
+        Handler["<b>handler.py</b><br/>lambda_handler()<br/>─────────<br/>_extract_body()<br/>_extract_header()<br/>_extract_price_targets()<br/>_handle_stock_update()<br/>_handle_product_update()<br/>_handle_sale_order()<br/>_response()"]
 
         Sig["<b>signature.py</b><br/>verify_signature()"]
-        Models["<b>models.py</b><br/>HoldedStockPayload<br/>HoldedStockAvailability<br/>HoldedProductPayload<br/>HoldedProductVariant<br/>WinkAdjustItem / StockRequest<br/>WinkSyncPriceRequest"]
+        Models["<b>models.py</b><br/>HoldedStockPayload<br/>HoldedStockAvailability<br/>HoldedProductPayload<br/>HoldedProductVariant<br/>HoldedSaleOrderPayload<br/>HoldedSaleOrderLine<br/>WinkAdjustItem / StockRequest<br/>WinkSyncPriceRequest"]
         HoldedClient["<b>holded_client.py</b><br/>get_available_stock()"]
         Client["<b>wink_client.py</b><br/>adjust_stock()<br/>adjust_price()"]
         Config["<b>config.py</b><br/>Settings<br/>get_settings()"]
@@ -48,6 +48,7 @@ flowchart LR
 |--------------------------|--------|---------------|
 | `stock.update` | Read the product's `available` stock from the Holded API, then set the SKU's stock to it via `replace` | `adjust-stock-by-sku` |
 | `product.update` | Push `price` for each SKU | `update-price-by-sku` |
+| `salesorder.create` · `salesorder.update` | For each line's product, read `available` from the Holded API, then set the line's SKU stock to it via `replace` | `adjust-stock-by-sku` |
 | anything else | `200 {"status": "ignored"}` | — |
 
 Signature verification runs **before** routing, so an unsigned or tampered event never reaches either Wink call.
@@ -114,6 +115,30 @@ sequenceDiagram
                     L-->>H: 500 with synced and failed counts
                 else all SKUs synced
                     L-->>H: 200 with synced count and per-SKU results
+                end
+            end
+        else salesorder.create / salesorder.update
+            L->>M: HoldedSaleOrderPayload.model_validate_json()
+            alt no lines
+                L-->>H: 200 skipped — no_lines
+            else lines present
+                loop one call per line with productId + sku
+                    L->>HD: get_available_stock(line.product_id, config)
+                    HD->>H: GET /api/v2/products/{productId}/stock
+                    H-->>HD: 200 with available (decimal string)
+                    alt availability or Wink call failed
+                        L-->>H: 500 — Holded retries (replace is idempotent)
+                    else available resolved
+                        HD-->>L: available as float
+                        L->>W: adjust_stock(line.sku, available, config)
+                        W->>A: POST /product-inventory/adjust-stock-by-sku
+                        A-->>W: 200 with summary and results
+                    end
+                end
+                alt any line failed
+                    L-->>H: 500 with synced and failed counts
+                else all lines synced
+                    L-->>H: 200 with synced count and per-line results
                 end
             end
         else unsupported event
@@ -258,12 +283,13 @@ This runs `main.py` which builds a sample event and calls `lambda_handler`. Make
 
 ## Webhook Behaviour
 
-1. Holded fires a `stock.update` or `product.update` webhook.
+1. Holded fires a `stock.update`, `product.update`, `salesorder.create` or `salesorder.update` webhook.
 2. The Lambda verifies the HMAC-SHA256 signature before doing anything else.
 3. It routes on the `x-holded-webhook-event` header.
 4. `stock.update` → reads the product's `available` stock from the Holded API and **sets** the Wink stock for the SKU to that value, via the `replace` operation of `adjust-stock-by-sku`.
 5. `product.update` → pushes `price` per SKU via `update-price-by-sku`.
-6. Any other event is acknowledged with `200 {"status": "ignored"}` so Holded does not retry it.
+6. `salesorder.create` / `salesorder.update` → iterates the order's `lines` and, for each line that names a product, reads that product's `available` stock from the Holded API and **sets** the line's SKU in Wink to that value via `replace`.
+7. Any other event is acknowledged with `200 {"status": "ignored"}` so Holded does not retry it.
 
 ### Stock sync rules
 
@@ -285,6 +311,7 @@ reports:
   0, since Wink requires an integer ≥ 0 and would reject the whole request
   otherwise. A stock of 0 is still sent — it means *agotado*.
 - **Empty `sku`** returns `400`, checked before the availability lookup.
+- **Sale order events** (`salesorder.create` / `salesorder.update`) run the same per-product flow as `stock.update`: for each line carrying a `productId` and a `sku`, the product's `available` is read from the Holded API and the line's SKU stock is set to it with `replace`. Lines without a product or SKU (e.g. free-text lines) are skipped with a warning; a sale order with no lines at all answers `200 {"status": "skipped", "reason": "no_lines"}`.
 - **Holded availability failure** (401/404/timeout, bad payload) returns `500`
   so Holded retries the delivery instead of leaving Wink out of sync.
 - Wink answers `200` even when an individual adjustment failed
@@ -303,10 +330,10 @@ reports:
 
 | Status | When |
 |--------|------|
-| `200` | Stock set, prices synced, or skipped (`no_price_targets`, `ignored`) |
+| `200` | Stock set, prices synced, sale order lines synced, or skipped (`no_price_targets`, `no_lines`, `ignored`) |
 | `400` | `stock.update` payload has an empty `sku` |
 | `401` | Signature header missing or HMAC mismatch |
-| `500` | Unhandled error, failed Holded availability lookup, or at least one SKU failed during `product.update` |
+| `500` | Unhandled error, failed Holded availability lookup, at least one SKU failed during `product.update`, or at least one line failed during a sale order event |
 
 ## Deploying
 
@@ -345,7 +372,7 @@ A missing secret fails the run with an explicit `::error::` message rather than 
 3. Creates the function on first run, or updates code and configuration on later runs.
 4. Creates or updates the Function URL and makes it publicly invokable, then prints the URL.
 
-The Lambda has no `.env` file: pydantic-settings reads `HOLDED_WEBHOOK_SECRET`, `HOLDED_API_KEY`, `WINK_API_KEY` and `WINK_INVENTORY_IDS` from the function's environment variables, which the workflow sets from the secrets above. Register the printed URL in Holded for the `stock.update` and `product.update` events.
+The Lambda has no `.env` file: pydantic-settings reads `HOLDED_WEBHOOK_SECRET`, `HOLDED_API_KEY`, `WINK_API_KEY` and `WINK_INVENTORY_IDS` from the function's environment variables, which the workflow sets from the secrets above. Register the printed URL in Holded for the `stock.update`, `product.update`, `salesorder.create` and `salesorder.update` events.
 
 The function URL uses `--auth-type NONE`, so requests are unauthenticated at the transport level. The HMAC signature check in the handler is the actual authentication, so `HOLDED_WEBHOOK_SECRET` must be set both in Holded and in the Lambda.
 

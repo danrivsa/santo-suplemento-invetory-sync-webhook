@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class HoldedStockPayload(BaseModel):
@@ -80,3 +80,19 @@ class HoldedProductPayload(BaseModel):
     stock: float = 0
     variants: list[HoldedProductVariant] = Field(default_factory=list)
     pack_items: list[dict] = Field(default_factory=list, alias="packItems")
+
+
+class HoldedSaleOrderLine(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    product_id: str | None = Field(default=None, validation_alias=AliasChoices("productId", "product_id"))
+    sku: str | None = None
+
+
+class HoldedSaleOrderPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    type: str = "salesorder"
+    document_number: str | None = Field(default=None, alias="documentNumber")
+    lines: list[HoldedSaleOrderLine] = Field(default_factory=list)

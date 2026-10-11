@@ -86,6 +86,16 @@ PRODUCT_EVENT_BODY = {
     ],
 }
 
+SALE_ORDER_EVENT_BODY = {
+    "id": "so_001",
+    "type": "salesorder",
+    "documentNumber": "SO-001",
+    "lines": [
+        {"productId": "prod_001", "sku": "ABC-123", "units": 1},
+        {"productId": "prod_002", "sku": "CREA-500", "units": 2},
+    ],
+}
+
 
 def main() -> None:
 
@@ -95,6 +105,7 @@ def main() -> None:
         ("evt_manual", "stock.update", STOCK_EVENT_BODY),
         ("evt_sale", "stock.update", SALE_EVENT_BODY),
         ("evt_price", "product.update", PRODUCT_EVENT_BODY),
+        ("evt_sales_order", "salesorder.create", SALE_ORDER_EVENT_BODY),
     ):
         print(f"\n=== {event_type} {payload.get('action') or payload.get('id')} ===")
         response = lambda_handler(_build_event(event_type, payload, settings.holded_webhook_secret, webhook_id), None)

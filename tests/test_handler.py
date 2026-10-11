@@ -467,3 +467,120 @@ def test_price_sync_is_not_affected_by_stock_events(monkeypatch, mocker):
     lambda_handler(_make_event(PRODUCT_PAYLOAD, event="product.update"), None)
 
     assert price.call_count == 4
+
+
+SALE_ORDER_PAYLOAD = {
+    "id": "so_001",
+    "type": "salesorder",
+    "documentNumber": "SO-001",
+    "lines": [
+        {"productId": "prod_001", "sku": "ABC-123", "units": 1},
+        {"productId": "prod_002", "sku": "CREA-500", "units": 2},
+    ],
+}
+
+
+def _sale_order_event(payload: dict, event: str = "salesorder.create") -> dict:
+    return _make_event(payload, event=event)
+
+
+def test_sale_order_syncs_each_line_availability(monkeypatch, mocker):
+    _patch_settings(monkeypatch)
+    availability = mocker.patch("src.handler.get_available_stock", side_effect=[42.0, 7.0])
+    stock = mocker.patch("src.handler.adjust_stock", return_value=_OK)
+
+    resp = lambda_handler(_sale_order_event(SALE_ORDER_PAYLOAD), None)
+
+    assert resp["statusCode"] == 200
+    body = json.loads(resp["body"])
+    assert body["status"] == "ok"
+    assert body["synced"] == 2
+    assert [call.kwargs["product_id"] for call in availability.call_args_list] == ["prod_001", "prod_002"]
+    assert [call.kwargs["sku"] for call in stock.call_args_list] == ["ABC-123", "CREA-500"]
+    assert [call.kwargs["quantity"] for call in stock.call_args_list] == [42.0, 7.0]
+
+
+def test_sale_order_update_uses_same_flow(monkeypatch, mocker):
+    _patch_settings(monkeypatch)
+    mocker.patch("src.handler.get_available_stock", return_value=42.0)
+    stock = mocker.patch("src.handler.adjust_stock", return_value=_OK)
+
+    resp = lambda_handler(_sale_order_event(SALE_ORDER_PAYLOAD, event="salesorder.update"), None)
+
+    assert resp["statusCode"] == 200
+    assert json.loads(resp["body"])["status"] == "ok"
+    assert stock.call_count == 2
+
+
+def test_sale_order_accepts_snake_case_lines(monkeypatch, mocker):
+    _patch_settings(monkeypatch)
+    availability = mocker.patch("src.handler.get_available_stock", return_value=42.0)
+    stock = mocker.patch("src.handler.adjust_stock", return_value=_OK)
+    payload = {**SALE_ORDER_PAYLOAD, "lines": [{"product_id": "prod_001", "sku": "ABC-123"}]}
+
+    resp = lambda_handler(_sale_order_event(payload), None)
+
+    assert resp["statusCode"] == 200
+    availability.assert_called_once()
+    stock.assert_called_once_with(sku="ABC-123", quantity=42.0, config=stock.call_args.kwargs["config"])
+
+
+def test_sale_order_skips_lines_without_product_or_sku(monkeypatch, mocker):
+    _patch_settings(monkeypatch)
+    availability = mocker.patch("src.handler.get_available_stock", return_value=42.0)
+    stock = mocker.patch("src.handler.adjust_stock", return_value=_OK)
+    payload = {
+        **SALE_ORDER_PAYLOAD,
+        "lines": [
+            {"productId": "prod_001", "sku": "ABC-123"},
+            {"sku": "NO-PRODUCT"},
+            {"productId": "prod_002", "sku": None},
+        ],
+    }
+
+    resp = lambda_handler(_sale_order_event(payload), None)
+
+    assert resp["statusCode"] == 200
+    assert json.loads(resp["body"])["synced"] == 1
+    availability.assert_called_once_with(product_id="prod_001", config=availability.call_args.kwargs["config"])
+    stock.assert_called_once()
+
+
+def test_sale_order_skipped_when_no_lines(monkeypatch, mocker):
+    _patch_settings(monkeypatch)
+    stock = mocker.patch("src.handler.adjust_stock", return_value=_OK)
+    payload = {**SALE_ORDER_PAYLOAD, "lines": []}
+
+    resp = lambda_handler(_sale_order_event(payload), None)
+
+    assert resp["statusCode"] == 200
+    body = json.loads(resp["body"])
+    assert body["status"] == "skipped"
+    assert body["reason"] == "no_lines"
+    stock.assert_not_called()
+
+
+def test_sale_order_partial_failure_returns_500(monkeypatch, mocker):
+    _patch_settings(monkeypatch)
+    mocker.patch("src.handler.get_available_stock", side_effect=[42.0, Exception("Holded API error")])
+    stock = mocker.patch("src.handler.adjust_stock", return_value=_OK)
+
+    resp = lambda_handler(_sale_order_event(SALE_ORDER_PAYLOAD), None)
+
+    assert resp["statusCode"] == 500
+    body = json.loads(resp["body"])
+    assert body["status"] == "error"
+    assert body["synced"] == 1
+    assert body["failed"] == 1
+    assert stock.call_count == 1
+
+
+def test_sale_order_does_not_touch_stock_update_path(monkeypatch, mocker):
+    _patch_settings(monkeypatch)
+    mocker.patch("src.handler.get_available_stock", return_value=42.0)
+    stock = mocker.patch("src.handler.adjust_stock", return_value=_OK)
+
+    lambda_handler(_make_event(VALID_PAYLOAD, event="stock.update"), None)
+    lambda_handler(_sale_order_event(SALE_ORDER_PAYLOAD), None)
+
+    assert stock.call_count == 3
