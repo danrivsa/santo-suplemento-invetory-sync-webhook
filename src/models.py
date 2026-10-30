@@ -11,17 +11,10 @@ class HoldedStockPayload(BaseModel):
     warehouse_id: str = Field(alias="warehouseId")
     sku: str
     stock_variation: float = Field(alias="stockVariation")
-    calculated_stock: float = Field(alias="calculatedStock")
-    calculated_variant_stock: float = Field(alias="calculatedVariantStock")
     description: str = ""
-    date: str = ""
-    created: str = ""
     action: str | None = None
     provider_origin_change: str | None = Field(default=None, alias="providerOriginChange")
-    provider_id_origin_change: str | None = Field(default=None, alias="providerIdOriginChange")
     id_origin_change: str | None = Field(default=None, alias="idOriginChange")
-    doc_hash: str | None = Field(default=None, alias="docHash")
-    hash: str | None = None
 
 
 class HoldedStockAvailability(BaseModel):
@@ -43,11 +36,6 @@ class WinkAdjustItem(BaseModel):
 class WinkAdjustStockRequest(BaseModel):
     items: list[WinkAdjustItem]
     inventory_ids: list[int]
-
-
-class WinkAdjustStockResponse(BaseModel):
-    summary: dict
-    results: list[dict]
 
 
 class WinkSyncPriceRequest(BaseModel):
