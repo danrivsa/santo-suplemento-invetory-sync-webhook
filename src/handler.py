@@ -9,6 +9,7 @@ from src.holded_client import get_available_stock
 from src.models import HoldedProductPayload, HoldedSaleOrderPayload, HoldedStockPayload
 from src.signature import verify_signature
 from src.wink_client import adjust_price, adjust_stock
+from src.supabase_client import get_order_lines, delete_order_lines, register_sale_order
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -17,8 +18,9 @@ EVENT_STOCK_UPDATE = "stock.update"
 EVENT_PRODUCT_UPDATE = "product.update"
 EVENT_SALE_ORDER_CREATE = "salesorder.create"
 EVENT_SALE_ORDER_UPDATE = "salesorder.update"
+EVENT_SALE_ORDER_DELETE = "salesorder.delete"
 
-SALE_ORDER_EVENTS = {EVENT_SALE_ORDER_CREATE, EVENT_SALE_ORDER_UPDATE}
+SALE_ORDER_EVENTS_CREATION_UPDATE = {EVENT_SALE_ORDER_CREATE, EVENT_SALE_ORDER_UPDATE}
 
 
 def _extract_body(event: dict) -> bytes:
@@ -170,6 +172,9 @@ def _handle_sale_order(raw_body: bytes, config: Settings) -> tuple[int, dict]:
         payload.document_number,
         len(payload.lines),
     )
+    
+    # register the lines supabase
+    register_sale_order(payload.id, [{"product_id": line.product_id, "sku": line.sku} for line in payload.lines if line.product_id and line.sku])
 
     results: list[dict] = []
     failed = 0
@@ -206,6 +211,67 @@ def _handle_sale_order(raw_body: bytes, config: Settings) -> tuple[int, dict]:
 
     return 200, {"status": "ok", "synced": len(results), "results": results}
 
+def _handle_sale_order_delete(raw_body: bytes, config: Settings) -> tuple[int, dict]:
+    """Restablish Wink stock after a sales order is deleted.
+
+    A sale order delete event carries only the order id, so the ``(product_id,
+    sku)`` pairs are read from our database and the availability is re-read
+    from Holded per product line. Each line is pushed to Wink with ``replace``,
+    the same absolute-sync rules as ``_handle_stock_update``.
+
+    Lines without a product or without a SKU (free-text lines) are skipped;
+    failures propagate per line and a failed delivery returns 500 so Holded
+    retries it — ``replace`` makes a retry idempotent.
+    """
+    payload = HoldedSaleOrderPayload.model_validate_json(raw_body)
+
+    if not payload.id:
+        logger.warning("Missing sale order id in delete event, skipping")
+        return 400, {"error": "Missing sale order id"}
+
+    lines = get_order_lines(payload.id)
+    if not lines:
+        logger.info("No stored lines for sale order id=%s, skipping", payload.id)
+        return 200, {"status": "skipped", "reason": "no_stored_lines"}
+
+    logger.info(
+        "Received sale order delete for id=%s doc=%s with %d stored line(s)",
+        payload.id,
+        payload.document_number,
+        len(lines),
+    )
+
+    results: list[dict] = []
+    failed = 0
+    for product_id, sku in lines:
+        try:
+            target = get_available_stock(product_id=product_id, config=config)
+            result = adjust_stock(sku=sku, quantity=target, config=config)
+        except Exception:
+            logger.exception(
+                "Failed to sync availability for sale order delete line sku=%s product_id=%s",
+                sku,
+                product_id,
+            )
+            failed += 1
+            results.append({"sku": sku, "status": "error"})
+        else:
+            _log_wink_rejections(sku, result)
+            results.append({"sku": sku, "status": "ok"})
+
+    if failed:
+        return 500, {
+            "status": "error",
+            "synced": len(results) - failed,
+            "failed": failed,
+            "results": results,
+        }
+
+    # Only delete the order from our database after all lines have been successfully restored.
+    delete_order_lines(payload.id)
+
+    return 200, {"status": "ok", "synced": len}
+
 
 def lambda_handler(event: dict, context: object) -> dict:  # noqa: ARG001
     try:
@@ -229,8 +295,11 @@ def lambda_handler(event: dict, context: object) -> dict:  # noqa: ARG001
             status_code, body = _handle_stock_update(raw_body, config)
         elif event_type == EVENT_PRODUCT_UPDATE:
             status_code, body = _handle_product_update(raw_body, config)
-        elif event_type in SALE_ORDER_EVENTS:
+        elif event_type in SALE_ORDER_EVENTS_CREATION_UPDATE:
             status_code, body = _handle_sale_order(raw_body, config)
+        elif event_type == EVENT_SALE_ORDER_DELETE:
+            # restablish stock for the order lines, then delete the order from our database
+            status_code, body = _handle_sale_order_delete(raw_body, config)
         else:
             logger.info("Ignoring unsupported webhook event: %s", event_type or "<missing>")
             status_code, body = 200, {"status": "ignored", "event": event_type}
