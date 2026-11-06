@@ -45,6 +45,11 @@ jobs:
         run: uv run ruff format --check src/ tests/ main.py
 
       - name: Run tests
+        env:
+          # src.supabase_client builds the client at import time; dummy values
+          # keep the import working in CI without real Supabase credentials.
+          SUPABASE_URL: http://127.0.0.1:9
+          SUPABASE_KEY: test-key
         run: uv run pytest tests/ -v
 
   deploy:
@@ -76,6 +81,10 @@ jobs:
           echo "Package size: $(du -h build/deployment.zip | cut -f1)"
 
       - name: Verify package imports
+        env:
+          # Same reason as the test job: the Supabase client is created on import.
+          SUPABASE_URL: http://127.0.0.1:9
+          SUPABASE_KEY: test-key
         run: |
           PYTHONPATH=build/package uv run --no-project --python "$PYTHON_VERSION" python -c "
           from src.handler import lambda_handler
@@ -95,10 +104,12 @@ jobs:
           HOLDED_API_KEY: ${{ secrets.HOLDED_API_KEY }}
           WINK_API_KEY: ${{ secrets.WINK_API_KEY }}
           WINK_INVENTORY_IDS: ${{ secrets.WINK_INVENTORY_IDS }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           LAMBDA_ROLE_ARN: ${{ secrets.LAMBDA_ROLE_ARN }}
         run: |
           missing=0
-          for name in HOLDED_WEBHOOK_SECRET HOLDED_API_KEY WINK_API_KEY WINK_INVENTORY_IDS LAMBDA_ROLE_ARN; do
+          for name in HOLDED_WEBHOOK_SECRET HOLDED_API_KEY WINK_API_KEY WINK_INVENTORY_IDS SUPABASE_URL SUPABASE_KEY LAMBDA_ROLE_ARN; do
             if [ -z "${!name}" ]; then
               echo "::error::Secret $name is not set"
               missing=1
@@ -112,6 +123,8 @@ jobs:
           HOLDED_API_KEY: ${{ secrets.HOLDED_API_KEY }}
           WINK_API_KEY: ${{ secrets.WINK_API_KEY }}
           WINK_INVENTORY_IDS: ${{ secrets.WINK_INVENTORY_IDS }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           LAMBDA_ROLE_ARN: ${{ secrets.LAMBDA_ROLE_ARN }}
         run: |
           RUNTIME="python$PYTHON_VERSION"
@@ -129,7 +142,9 @@ jobs:
             --arg holded "$HOLDED_API_KEY" \
             --arg key "$WINK_API_KEY" \
             --arg inv "$WINK_INVENTORY_IDS" \
-            '{HOLDED_WEBHOOK_SECRET: $secret, HOLDED_API_KEY: $holded, WINK_API_KEY: $key, WINK_INVENTORY_IDS: $inv}' \
+            --arg supabase_url "$SUPABASE_URL" \
+            --arg supabase_key "$SUPABASE_KEY" \
+            '{HOLDED_WEBHOOK_SECRET: $secret, HOLDED_API_KEY: $holded, WINK_API_KEY: $key, WINK_INVENTORY_IDS: $inv, SUPABASE_URL: $supabase_url, SUPABASE_KEY: $supabase_key}' \
             > build/variables.json
 
           if aws lambda get-function --function-name "$FUNCTION_NAME" >/dev/null 2>&1; then
