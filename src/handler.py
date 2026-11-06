@@ -8,8 +8,8 @@ from src.config import Settings, get_settings
 from src.holded_client import get_available_stock
 from src.models import HoldedProductPayload, HoldedSaleOrderPayload, HoldedStockPayload
 from src.signature import verify_signature
+from src.supabase_client import delete_order_lines, get_order_lines, register_sale_order
 from src.wink_client import adjust_price, adjust_stock
-from src.supabase_client import get_order_lines, delete_order_lines, register_sale_order
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -172,9 +172,12 @@ def _handle_sale_order(raw_body: bytes, config: Settings) -> tuple[int, dict]:
         payload.document_number,
         len(payload.lines),
     )
-    
+
     # register the lines supabase
-    register_sale_order(payload.id, [{"product_id": line.product_id, "sku": line.sku} for line in payload.lines if line.product_id and line.sku])
+    register_sale_order(
+        payload.id,
+        [{"product_id": line.product_id, "sku": line.sku} for line in payload.lines if line.product_id and line.sku],
+    )
 
     results: list[dict] = []
     failed = 0
@@ -210,6 +213,7 @@ def _handle_sale_order(raw_body: bytes, config: Settings) -> tuple[int, dict]:
         }
 
     return 200, {"status": "ok", "synced": len(results), "results": results}
+
 
 def _handle_sale_order_delete(raw_body: bytes, config: Settings) -> tuple[int, dict]:
     """Restablish Wink stock after a sales order is deleted.
