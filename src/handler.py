@@ -247,7 +247,9 @@ def _handle_sale_order_delete(raw_body: bytes, config: Settings) -> tuple[int, d
 
     results: list[dict] = []
     failed = 0
-    for product_id, sku in lines:
+    for line in lines:
+        product_id = line["product_id"]
+        sku = line["sku"]
         try:
             target = get_available_stock(product_id=product_id, config=config)
             result = adjust_stock(sku=sku, quantity=target, config=config)
@@ -274,7 +276,7 @@ def _handle_sale_order_delete(raw_body: bytes, config: Settings) -> tuple[int, d
     # Only delete the order from our database after all lines have been successfully restored.
     delete_order_lines(payload.id)
 
-    return 200, {"status": "ok", "synced": len}
+    return 200, {"status": "ok", "synced": len(results)}
 
 
 def lambda_handler(event: dict, context: object) -> dict:  # noqa: ARG001
